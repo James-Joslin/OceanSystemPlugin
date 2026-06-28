@@ -8,7 +8,7 @@
 #include "../WaveEval/GerstnerEvaluator.h"
 #include "WaveParameterSubsystem.generated.h"
 
-class UWaterBodyComponent;
+class UOceanBodyComponent;
 
 // ---------------------------------------------------------------------------
 // FWaterBodyQueryResult
@@ -74,7 +74,7 @@ public:
 
 	/**
 	 * Register a water body. The entry should be fully populated by the
-	 * calling WaterBodyComponent. Layers are re-sorted by amplitude on
+	 * calling OceanBodyComponent. Layers are re-sorted by amplitude on
 	 * registration. Blend zones are auto-detected against existing bodies.
 	 * The registry is re-sorted by priority descending.
 	 */
@@ -84,18 +84,18 @@ public:
 	 * Remove a water body from the registry. Cleans up any blend zones
 	 * referencing the body.
 	 */
-	void UnregisterWaterBody(const UWaterBodyComponent* Body);
+	void UnregisterWaterBody(const UOceanBodyComponent* Body);
 
 	/**
 	 * Update a body's wave config. Re-sorts layers by amplitude, marks
 	 * the body dirty for MID resync, and refreshes blend zones.
 	 */
-	void UpdateWaterBodyConfig(const UWaterBodyComponent* Body, const FWaveConfig& NewConfig);
+	void UpdateWaterBodyConfig(const UOceanBodyComponent* Body, const FWaveConfig& NewConfig);
 
 	/**
 	 * Mark a body dirty so its MID is resynced on the next tick.
 	 */
-	void MarkBodyDirty(const UWaterBodyComponent* Body);
+	void MarkBodyDirty(const UOceanBodyComponent* Body);
 
 	// -------------------------------------------------------------------
 	// Spatial Queries
@@ -166,7 +166,7 @@ private:
 	// -------------------------------------------------------------------
 
 	/** Find the index of a body by its owner pointer. INDEX_NONE if not found. */
-	int32 FindEntryIndex(const UWaterBodyComponent* Body) const;
+	int32 FindEntryIndex(const UOceanBodyComponent* Body) const;
 
 	/** Re-sort registry by priority descending. */
 	void SortRegistryByPriority();
@@ -185,7 +185,7 @@ private:
 	void DetectBlendZones(int32 NewBodyIndex);
 
 	/** Remove all blend zone entries referencing a body. */
-	void RemoveBlendZonesFor(const UWaterBodyComponent* Body);
+	void RemoveBlendZonesFor(const UOceanBodyComponent* Body);
 
 	/**
 	 * Full spatial query: find primary body, optional secondary for blend,

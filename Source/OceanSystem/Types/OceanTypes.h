@@ -8,7 +8,7 @@
 #include "OceanTypes.generated.h"
 
 // Forward declarations for Phase 4+ types used by TWeakObjectPtr
-class UWaterBodyComponent;
+class UOceanBodyComponent;
 class USplineComponent;
 class UMaterialInstanceDynamic;
 
@@ -88,7 +88,7 @@ struct OCEANSYSTEM_API FGerstnerWaveLayer
  * skipped on the physics path.
  *
  * Call SortLayers() after modifying the Layers array directly.
- * SetWaveConfig() on WaterBodyComponent handles this automatically.
+ * SetWaveConfig() on OceanBodyComponent handles this automatically.
  */
 USTRUCT(BlueprintType)
 struct OCEANSYSTEM_API FWaveConfig
@@ -116,7 +116,7 @@ struct OCEANSYSTEM_API FWaveConfig
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Waves", meta = (ClampMin = "0.0", UIMin = "0.1", UIMax = "3.0"))
 	float TimeScale = 1.0f;
 
-	/** Set by WaterBodyComponent when config changes; cleared after MID sync. */
+	/** Set by OceanBodyComponent when config changes; cleared after MID sync. */
 	bool bDirty = false;
 
 	// -------------------------------------------------------------------
@@ -224,10 +224,10 @@ struct FBlendZoneEntry
 	GENERATED_BODY()
 
 	/** First water body in the blend pair. */
-	TWeakObjectPtr<UWaterBodyComponent> BodyA;
+	TWeakObjectPtr<UOceanBodyComponent> BodyA;
 
 	/** Second water body in the blend pair. */
-	TWeakObjectPtr<UWaterBodyComponent> BodyB;
+	TWeakObjectPtr<UOceanBodyComponent> BodyB;
 
 	/** Width of the blend region in world units. */
 	float BlendWidth = 200.0f;
@@ -250,7 +250,7 @@ struct FWaterBodyEntry
 	GENERATED_BODY()
 
 	/** Owning component (source of truth for config edits). */
-	TWeakObjectPtr<UWaterBodyComponent> Owner;
+	TWeakObjectPtr<UOceanBodyComponent> Owner;
 
 	/** Cached body type for fast dispatch. */
 	EOceanBodyType BodyType = EOceanBodyType::Ocean;
