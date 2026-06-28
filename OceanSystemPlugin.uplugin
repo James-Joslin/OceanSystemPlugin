@@ -1,24 +1,26 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.0",
-	"FriendlyName": "OceanSystemPlugin",
-	"Description": "Custom and more minimal water and buoyancy plugin to replace Unreal's Built in system",
-	"Category": "Other",
-	"CreatedBy": "Feoul_Metrica",
-	"CreatedByURL": "",
-	"DocsURL": "",
-	"MarketplaceURL": "",
-	"SupportURL": "",
+	"VersionName": "0.1.0",
+	"FriendlyName": "Ocean System",
+	"Description": "Complete water system with Gerstner wave ocean, lake, and river bodies, CPU buoyancy, underwater post-process, surface foam, and crest spray.",
+	"Category": "Rendering",
+	"CreatedBy": "James Joslin",
+	"CreatedByURL": "https://github.com/James-Joslin",
 	"CanContainContent": true,
-	"IsBetaVersion": false,
-	"IsExperimentalVersion": false,
+	"IsBetaVersion": true,
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "OceanSystemPlugin",
+			"Name": "OceanSystem",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "PostConfigInit"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "Niagara",
+			"Enabled": true
 		}
 	]
 }
