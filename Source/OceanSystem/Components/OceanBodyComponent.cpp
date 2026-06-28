@@ -1,12 +1,12 @@
 // Copyright James Joslin. All Rights Reserved.
 
-#include "WaterBodyComponent.h"
+#include "OceanBodyComponent.h"
 #include "../Subsystem/WaveParameterSubsystem.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
 
-UWaterBodyComponent::UWaterBodyComponent()
+UOceanBodyComponent::UOceanBodyComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 	WaveConfig = FWaveConfig::MakeDefaultOcean();
@@ -16,7 +16,7 @@ UWaterBodyComponent::UWaterBodyComponent()
 // Lifecycle
 // ===================================================================
 
-void UWaterBodyComponent::BeginPlay()
+void UOceanBodyComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
@@ -30,7 +30,7 @@ void UWaterBodyComponent::BeginPlay()
 	else
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("WaterBodyComponent on '%s': BaseMaterial is not set — no MID created. "
+			TEXT("OceanBodyComponent on '%s': BaseMaterial is not set — no MID created. "
 				"Waves will evaluate on CPU but the mesh will not animate."),
 			*GetOwner()->GetName());
 	}
@@ -46,7 +46,7 @@ void UWaterBodyComponent::BeginPlay()
 	}
 }
 
-void UWaterBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+void UOceanBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (UWorld* World = GetWorld())
 	{
@@ -64,7 +64,7 @@ void UWaterBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 // Runtime API
 // ===================================================================
 
-void UWaterBodyComponent::SetWaveConfig(const FWaveConfig& NewConfig)
+void UOceanBodyComponent::SetWaveConfig(const FWaveConfig& NewConfig)
 {
 	WaveConfig = NewConfig;
 	WaveConfig.SortLayers();
@@ -83,11 +83,11 @@ void UWaterBodyComponent::SetWaveConfig(const FWaveConfig& NewConfig)
 // Internal
 // ===================================================================
 
-FWaterBodyEntry UWaterBodyComponent::BuildRegistryEntry() const
+FWaterBodyEntry UOceanBodyComponent::BuildRegistryEntry() const
 {
 	FWaterBodyEntry Entry;
 
-	Entry.Owner = const_cast<UWaterBodyComponent*>(this);
+	Entry.Owner = const_cast<UOceanBodyComponent*>(this);
 	Entry.BodyType = BodyType;
 	Entry.Priority = Priority;
 

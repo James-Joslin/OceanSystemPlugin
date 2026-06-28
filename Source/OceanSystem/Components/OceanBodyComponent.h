@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "Components/SceneComponent.h"
 #include "../Types/OceanTypes.h"
-#include "WaterBodyComponent.generated.h"
+#include "OceanBodyComponent.generated.h"
 
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
@@ -25,12 +25,12 @@ class UWaveParameterSubsystem;
  * (ClipmapOceanMesh, TiledWaterMesh, or SplineMeshComponents).
  */
 UCLASS(ClassGroup = (OceanSystem), meta = (BlueprintSpawnableComponent))
-class OCEANSYSTEM_API UWaterBodyComponent : public USceneComponent
+class OCEANSYSTEM_API UOceanBodyComponent : public USceneComponent
 {
 	GENERATED_BODY()
 
 public:
-	UWaterBodyComponent();
+	UOceanBodyComponent();
 
 	// -------------------------------------------------------------------
 	// Properties

@@ -118,7 +118,7 @@ void UWaveParameterSubsystem::RegisterWaterBody(const FWaterBodyEntry& Entry)
 	}
 }
 
-void UWaveParameterSubsystem::UnregisterWaterBody(const UWaterBodyComponent* Body)
+void UWaveParameterSubsystem::UnregisterWaterBody(const UOceanBodyComponent* Body)
 {
 	if (!Body)
 	{
@@ -137,7 +137,7 @@ void UWaveParameterSubsystem::UnregisterWaterBody(const UWaterBodyComponent* Bod
 }
 
 void UWaveParameterSubsystem::UpdateWaterBodyConfig(
-	const UWaterBodyComponent* Body, const FWaveConfig& NewConfig)
+	const UOceanBodyComponent* Body, const FWaveConfig& NewConfig)
 {
 	const int32 Index = FindEntryIndex(Body);
 	if (Index == INDEX_NONE)
@@ -151,7 +151,7 @@ void UWaveParameterSubsystem::UpdateWaterBodyConfig(
 	Entry.WaveConfig.bDirty = true;
 }
 
-void UWaveParameterSubsystem::MarkBodyDirty(const UWaterBodyComponent* Body)
+void UWaveParameterSubsystem::MarkBodyDirty(const UOceanBodyComponent* Body)
 {
 	const int32 Index = FindEntryIndex(Body);
 	if (Index != INDEX_NONE)
@@ -227,7 +227,7 @@ FWaterBodyQueryResult UWaveParameterSubsystem::QueryBodiesAt(const FVector& Worl
 		float BlendWidth = 200.0f;
 		for (const FBlendZoneEntry& BZ : Primary.BlendZones)
 		{
-			const UWaterBodyComponent* BZOther =
+			const UOceanBodyComponent* BZOther =
 				(BZ.BodyA == Primary.Owner) ? BZ.BodyB.Get() : BZ.BodyA.Get();
 			if (BZOther == Secondary.Owner.Get())
 			{
@@ -365,7 +365,7 @@ float UWaveParameterSubsystem::GetFoldIntensity(const FVector& WorldPos)
 // Internal — Helpers
 // ===================================================================
 
-int32 UWaveParameterSubsystem::FindEntryIndex(const UWaterBodyComponent* Body) const
+int32 UWaveParameterSubsystem::FindEntryIndex(const UOceanBodyComponent* Body) const
 {
 	for (int32 i = 0; i < WaterBodies.Num(); ++i)
 	{
@@ -552,7 +552,7 @@ void UWaveParameterSubsystem::DetectBlendZones(int32 NewBodyIndex)
 	}
 }
 
-void UWaveParameterSubsystem::RemoveBlendZonesFor(const UWaterBodyComponent* Body)
+void UWaveParameterSubsystem::RemoveBlendZonesFor(const UOceanBodyComponent* Body)
 {
 	for (FWaterBodyEntry& Entry : WaterBodies)
 	{
