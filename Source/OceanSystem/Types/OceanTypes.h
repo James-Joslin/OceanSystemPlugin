@@ -276,6 +276,9 @@ struct FWaterBodyEntry
 	/** Dynamic material instance for MID parameter sync. */
 	TWeakObjectPtr<UMaterialInstanceDynamic> MaterialInstance;
 
+	/** Runtime wave data texture for GPU lookup. Created/owned by subsystem. */
+	TWeakObjectPtr<UTexture2D> WaveDataTexture;
+
 	/** Active blend zones involving this body. */
 	TArray<FBlendZoneEntry> BlendZones;
 };

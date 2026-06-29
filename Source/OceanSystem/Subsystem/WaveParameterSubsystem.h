@@ -8,6 +8,7 @@
 #include "../WaveEval/GerstnerEvaluator.h"
 #include "WaveParameterSubsystem.generated.h"
 
+class UTexture2D;
 class UOceanBodyComponent;
 
 // ---------------------------------------------------------------------------
@@ -209,6 +210,20 @@ private:
 	 * (time update only).
 	 */
 	void SyncMaterialInstance(FWaterBodyEntry& Entry, float WorldTime);
+
+	/**
+	* Create a transient 128×2 RGBA32F texture for wave data.
+	* No disk asset — lives in memory only, GC'd when unreferenced.
+	*/
+	UTexture2D* CreateWaveDataTexture() const;
+
+	/**
+	 * Write wave layer data into an existing data texture.
+	 * Row 0: (Amplitude, Wavelength, Steepness, Speed)
+	 * Row 1: (Direction.X, Direction.Y, PhaseOffset, 0)
+	 * Unused slots are zeroed.
+	 */
+	void UpdateWaveDataTexture(UTexture2D* Texture, const FWaveConfig& Config) const;
 
 	// -------------------------------------------------------------------
 	// Data
