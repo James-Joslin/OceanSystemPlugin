@@ -5,25 +5,18 @@
 // Include path: /OceanSystem/GerstnerWave.ush
 // (mapped by OceanSystemModule::StartupModule)
 //
-// Usage from a Custom material expression node:
+// Two evaluation modes:
 //
-//   #include "/OceanSystem/GerstnerWave.ush"
+//   1. EvaluateGerstnerFromTexture — reads wave data from a 128x2 data
+//      texture written by the subsystem. The material Custom node passes
+//      the texture as an input. No fixed array size, no parameter limit.
 //
-//   // Declare and fill arrays from material scalar/vector parameters, then:
-//   float3 Disp; float3 Norm; float Foam;
-//   EvaluateGerstner(WorldPos, Time, WaveCount,
-//       Amp, WL, Steep, Spd, Dir, Phase,
-//       Disp, Norm, Foam);
-//
-// Outputs:
-//   Displacement — world-space XYZ offset for World Position Offset pin
-//   Normal       — analytical surface normal (tangent-space relative to
-//                  undisplaced flat surface; feed directly to Normal pin)
-//   FoamMask     — 0 = calm, 1 = wave folding/breaking (Jacobian-based)
+//   2. EvaluateGerstner — original array-based entry point. Kept for
+//      direct testing or setups that prefer material parameters.
 //
 // CPU Parity:
-//   GerstnerEvaluator.cpp mirrors this math exactly. Any change here must
-//   be reflected there and vice versa. Test parity at known inputs.
+//   GerstnerEvaluator.cpp mirrors the core Gerstner math exactly.
+//   Any change to the wave loop must be reflected there and vice versa.
 // ---------------------------------------------------------------------------
 
 #ifndef GERSTNER_WAVE_USH
@@ -31,23 +24,108 @@
 
 static const float GERSTNER_TWO_PI = 6.28318530718f;
 
-/**
- * Evaluate a sum of up to 16 Gerstner wave layers.
- *
- * @param WorldPos   Undisplaced world position of the vertex (Z-up).
- * @param Time       World time in seconds (scaled by per-body TimeScale
- *                   before calling).
- * @param WaveCount  Number of active layers (1–16).
- * @param Amp        Per-layer amplitude in metres.
- * @param WL         Per-layer wavelength in metres (peak-to-peak).
- * @param Steep      Per-layer steepness Q in [0,1].
- * @param Spd        Per-layer phase velocity in m/s.
- * @param Dir        Per-layer propagation direction (normalised XY).
- * @param Phase      Per-layer constant phase offset in radians.
- * @param Displacement  (out) World-space vertex offset.
- * @param Normal        (out) Analytical surface normal.
- * @param FoamMask      (out) Jacobian fold intensity, 0–1.
- */
+// ===================================================================
+// Texture-based evaluation (primary path)
+// ===================================================================
+//
+// WaveData texture layout (128 x 2, RGBA32F):
+//   Row 0, Pixel N = (Amplitude, Wavelength, Steepness, Speed)
+//   Row 1, Pixel N = (Direction.X, Direction.Y, PhaseOffset, 0)
+//
+// Read via Texture2D.Load(int3(layerIndex, row, mip=0)).
+// No sampler, no filtering — pure integer-addressed data lookup.
+// ===================================================================
+
+void EvaluateGerstnerFromTexture(
+    float3 WorldPos,
+    float Time,
+    int WaveCount,
+    Texture2D WaveData,
+    out float3 Displacement,
+    out float3 Normal,
+    out float FoamMask)
+{
+    float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
+    float  NormX = 0.0f;
+    float  NormY = 0.0f;
+    float  NormZ = 1.0f;
+    float  JacobianSum = 0.0f;
+
+    int Count = clamp(WaveCount, 0, 128);
+
+    [loop]
+    for (int i = 0; i < Count; i++)
+    {
+        float4 wave = WaveData.Load(int3(i, 0, 0));
+        float4 dir  = WaveData.Load(int3(i, 1, 0));
+
+        float A     = wave.r;
+        float WL    = max(wave.g, 0.01f);
+        float Q     = wave.b;
+        float Spd   = wave.a;
+        float2 D    = dir.rg;
+        float Phase = dir.b;
+
+        float k     = GERSTNER_TWO_PI / WL;
+        float theta = k * dot(D, WorldPos.xy) - k * Spd * Time + Phase;
+
+        float sinTheta, cosTheta;
+        sincos(theta, sinTheta, cosTheta);
+
+        float kA = k * A;
+
+        TotalDisp.x += Q * A * D.x * cosTheta;
+        TotalDisp.y += Q * A * D.y * cosTheta;
+        TotalDisp.z += A * sinTheta;
+
+        NormX -= D.x * kA * cosTheta;
+        NormY -= D.y * kA * cosTheta;
+        NormZ -= Q * kA * sinTheta;
+
+        JacobianSum += Q * kA * cosTheta;
+    }
+
+    Displacement = TotalDisp;
+    Normal       = normalize(float3(NormX, NormY, NormZ));
+    FoamMask     = saturate(JacobianSum);
+}
+
+void EvaluateGerstnerDisplacementFromTexture(
+    float3 WorldPos,
+    float Time,
+    int WaveCount,
+    Texture2D WaveData,
+    out float3 Displacement)
+{
+    float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
+
+    int Count = clamp(WaveCount, 0, 128);
+
+    [loop]
+    for (int i = 0; i < Count; i++)
+    {
+        float4 wave = WaveData.Load(int3(i, 0, 0));
+        float4 dir  = WaveData.Load(int3(i, 1, 0));
+
+        float WL    = max(wave.g, 0.01f);
+        float k     = GERSTNER_TWO_PI / WL;
+        float theta = k * dot(dir.rg, WorldPos.xy) - k * wave.a * Time + dir.b;
+
+        float sinTheta, cosTheta;
+        sincos(theta, sinTheta, cosTheta);
+
+        TotalDisp.x += wave.b * wave.r * dir.r * cosTheta;
+        TotalDisp.y += wave.b * wave.r * dir.g * cosTheta;
+        TotalDisp.z += wave.r * sinTheta;
+    }
+
+    Displacement = TotalDisp;
+}
+
+// ===================================================================
+// Array-based evaluation (legacy / direct testing)
+// ===================================================================
+
 void EvaluateGerstner(
     float3 WorldPos,
     float Time,
@@ -62,25 +140,17 @@ void EvaluateGerstner(
     out float3 Normal,
     out float FoamMask)
 {
-    // Accumulated displacement
     float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
-
-    // Accumulated normal components (un-normalised)
     float  NormX = 0.0f;
     float  NormY = 0.0f;
     float  NormZ = 1.0f;
-
-    // Jacobian sum for fold detection
-    float JacobianSum = 0.0f;
+    float  JacobianSum = 0.0f;
 
     int Count = clamp(WaveCount, 0, 16);
 
     for (int i = 0; i < Count; i++)
     {
-        // Wave number
-        float k = GERSTNER_TWO_PI / WL[i];
-
-        // Phase angle:  k * dot(Dir, P.xy) - k * Speed * t + PhaseOffset
+        float k     = GERSTNER_TWO_PI / WL[i];
         float theta = k * dot(Dir[i], WorldPos.xy) - k * Spd[i] * Time + Phase[i];
 
         float sinTheta, cosTheta;
@@ -90,22 +160,14 @@ void EvaluateGerstner(
         float A  = Amp[i];
         float kA = k * A;
 
-        // ----- Displacement -----
-        // Horizontal: Q * A * Dir * cos(theta)
-        // Vertical:   A * sin(theta)
         TotalDisp.x += Q * A * Dir[i].x * cosTheta;
         TotalDisp.y += Q * A * Dir[i].y * cosTheta;
         TotalDisp.z += A * sinTheta;
 
-        // ----- Normal accumulation -----
-        // N.xy -= Dir * k * A * cos(theta)
-        // N.z  -= Q * k * A * sin(theta)
         NormX -= Dir[i].x * kA * cosTheta;
         NormY -= Dir[i].y * kA * cosTheta;
         NormZ -= Q * kA * sinTheta;
 
-        // ----- Fold detection (Jacobian) -----
-        // J = (1 - Σ Q*k*A*cos(theta))^2 ; folding when sum >= 1
         JacobianSum += Q * kA * cosTheta;
     }
 
@@ -114,11 +176,6 @@ void EvaluateGerstner(
     FoamMask     = saturate(JacobianSum);
 }
 
-/**
- * Evaluate displacement only (no normal or foam) — lighter variant for
- * cases where only WPO is needed (e.g. distance-LOD tiles that skip
- * per-pixel normal).
- */
 void EvaluateGerstnerDisplacementOnly(
     float3 WorldPos,
     float Time,
