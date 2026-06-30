@@ -3,6 +3,7 @@
 #include "TiledWaterMeshComponent.h"
 #include "ProceduralMeshComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
 #include "Engine/World.h"
 
 // ===================================================================
@@ -56,9 +57,20 @@ void UTiledWaterMeshComponent::TickComponent(
 		return;
 	}
 
-	FVector CamLoc;
-	FRotator CamRot;
-	PC->GetPlayerViewPoint(CamLoc, CamRot);
+	// LOD distance from the possessed pawn, not the camera.
+	// The player may orbit the camera far from the character;
+	// LOD should reflect where the character actually is.
+	// Falls back to camera if no pawn is possessed (spectator, etc.).
+	FVector LODCenter;
+	if (const APawn* Pawn = PC->GetPawn())
+	{
+		LODCenter = Pawn->GetActorLocation();
+	}
+	else
+	{
+		FRotator CamRot;
+		PC->GetPlayerViewPoint(LODCenter, CamRot);
+	}
 
 	const int32 NumLODs = GetNumLODLevels();
 
@@ -70,8 +82,8 @@ void UTiledWaterMeshComponent::TickComponent(
 			continue;
 		}
 
-		// Distance from camera to tile centre (world space)
-		const float Dist = FVector::Dist(CamLoc, Tile->GetComponentLocation());
+		// Distance from pawn to tile centre (world space)
+		const float Dist = FVector::Dist(LODCenter, Tile->GetComponentLocation());
 		const int32 DesiredLOD = ComputeLODLevel(Dist);
 
 		if (DesiredLOD != CurrentLODLevels[TileIdx])

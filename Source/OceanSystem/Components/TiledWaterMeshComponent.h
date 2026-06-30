@@ -40,12 +40,12 @@ public:
 
 	/** Number of tile columns (X axis). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TiledMesh|Grid",
-		meta = (ClampMin = "1", ClampMax = "32", UIMin = "1", UIMax = "8"))
+		meta = (ClampMin = "1", ClampMax = "32", UIMin = "1", UIMax = "32"))
 	int32 TilesX = 4;
 
 	/** Number of tile rows (Y axis). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TiledMesh|Grid",
-		meta = (ClampMin = "1", ClampMax = "32", UIMin = "1", UIMax = "8"))
+		meta = (ClampMin = "1", ClampMax = "32", UIMin = "1", UIMax = "32"))
 	int32 TilesY = 4;
 
 	/** World-unit size of each tile edge. */
@@ -59,7 +59,7 @@ public:
 
 	/** Subdivisions per tile edge at highest LOD (nearest to camera). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TiledMesh|LOD",
-		meta = (ClampMin = "2", ClampMax = "128", UIMin = "16", UIMax = "128"))
+		meta = (ClampMin = "2", ClampMax = "512", UIMin = "16", UIMax = "512"))
 	int32 TileSubdivisions = 64;
 
 	/**

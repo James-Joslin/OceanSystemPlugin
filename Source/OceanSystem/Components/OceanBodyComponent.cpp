@@ -13,37 +13,61 @@ UOceanBodyComponent::UOceanBodyComponent()
 }
 
 // ===================================================================
+// InitializeWaterBody — shared editor/runtime init
+// ===================================================================
+
+void UOceanBodyComponent::InitializeWaterBody()
+{
+	AActor* Owner = GetOwner();
+	const FString OwnerName = Owner ? Owner->GetName() : TEXT("null");
+
+	// --- Create MID only if it doesn't exist or parent material changed ---
+	UMaterialInterface* BaseMat = BaseMaterial.LoadSynchronous();
+	if (BaseMat)
+	{
+		if (!MaterialInstance || MaterialInstance->Parent != BaseMat)
+		{
+			MaterialInstance = UMaterialInstanceDynamic::Create(
+				BaseMat, this,
+				FName(*FString::Printf(TEXT("MID_%s"), *OwnerName)));
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("OceanBodyComponent on '%s': BaseMaterial not set — no MID created."),
+			*OwnerName);
+	}
+
+	// --- Register with subsystem ---
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	UWaveParameterSubsystem* Subsystem = World->GetSubsystem<UWaveParameterSubsystem>();
+	if (!Subsystem)
+	{
+		return;
+	}
+
+	// Unregister first so re-registration picks up the current MID and
+	// wave config. No-op if not previously registered.
+	Subsystem->UnregisterWaterBody(this);
+
+	FWaterBodyEntry Entry = BuildRegistryEntry();
+	Subsystem->RegisterWaterBody(Entry);
+}
+
+// ===================================================================
 // Lifecycle
 // ===================================================================
 
 void UOceanBodyComponent::BeginPlay()
 {
 	Super::BeginPlay();
-
-	// --- Create Dynamic Material Instance ---
-	UMaterialInterface* BaseMat = BaseMaterial.LoadSynchronous();
-	if (BaseMat)
-	{
-		MaterialInstance = UMaterialInstanceDynamic::Create(BaseMat, this,
-			FName(*FString::Printf(TEXT("MID_%s"), *GetOwner()->GetName())));
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("OceanBodyComponent on '%s': BaseMaterial is not set — no MID created. "
-				"Waves will evaluate on CPU but the mesh will not animate."),
-			*GetOwner()->GetName());
-	}
-
-	// --- Register with subsystem ---
-	if (UWorld* World = GetWorld())
-	{
-		if (UWaveParameterSubsystem* Subsystem = World->GetSubsystem<UWaveParameterSubsystem>())
-		{
-			FWaterBodyEntry Entry = BuildRegistryEntry();
-			Subsystem->RegisterWaterBody(Entry);
-		}
-	}
+	InitializeWaterBody();
 }
 
 void UOceanBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -61,7 +85,79 @@ void UOceanBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 }
 
 // ===================================================================
-// Runtime API
+// Editor — Property Change Handling
+// ===================================================================
+//
+// Without this, editing WaveConfig.Layers directly in the Details panel
+// has no effect — the subsystem's copy of the config never updates and
+// the MID never resyncs. This catches property changes and pushes the
+// new values to the subsystem immediately.
+//
+// Note: OnConstruction also fires on every property change, but it
+// only ensures MID/registration exist — it doesn't rebuild tiles.
+// This handler is responsible for the lightweight "mark dirty" path.
+// ===================================================================
+
+#if WITH_EDITOR
+void UOceanBodyComponent::PostEditChangeProperty(
+	FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	const FName MemberName = PropertyChangedEvent.GetMemberPropertyName();
+
+	UWorld* World = GetWorld();
+	UWaveParameterSubsystem* Subsystem = World
+		? World->GetSubsystem<UWaveParameterSubsystem>()
+		: nullptr;
+
+	// --- WaveConfig edited directly (Layers, PhysicsLayerCount, TimeScale) ---
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, WaveConfig))
+	{
+		WaveConfig.SortLayers();
+		WaveConfig.bDirty = true;
+
+		if (Subsystem)
+		{
+			Subsystem->UpdateWaterBodyConfig(this, WaveConfig);
+		}
+	}
+
+	// --- WaveGenerator property changed — auto-regenerate layers ---
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, WaveGenerator))
+	{
+		WaveConfig = WaveGenerator.Generate();
+
+		if (Subsystem)
+		{
+			Subsystem->UpdateWaterBodyConfig(this, WaveConfig);
+		}
+	}
+
+	// --- BaseMaterial changed — need new MID ---
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, BaseMaterial))
+	{
+		// Force MID recreation by nulling it first
+		MaterialInstance = nullptr;
+		InitializeWaterBody();
+	}
+
+	// --- Structural properties changed — re-register ---
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, BodyType)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, Priority)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, Extent))
+	{
+		if (Subsystem)
+		{
+			Subsystem->UnregisterWaterBody(this);
+			Subsystem->RegisterWaterBody(BuildRegistryEntry());
+		}
+	}
+}
+#endif
+
+// ===================================================================
+// Config Updates
 // ===================================================================
 
 void UOceanBodyComponent::SetWaveConfig(const FWaveConfig& NewConfig)
@@ -79,8 +175,26 @@ void UOceanBodyComponent::SetWaveConfig(const FWaveConfig& NewConfig)
 	}
 }
 
+void UOceanBodyComponent::GenerateWavesFromConfig()
+{
+	WaveConfig = WaveGenerator.Generate();
+
+	UE_LOG(LogTemp, Log,
+		TEXT("OceanBodyComponent '%s': Generated %d wave layers."),
+		GetOwner() ? *GetOwner()->GetName() : TEXT("null"),
+		WaveConfig.Layers.Num());
+
+	if (UWorld* World = GetWorld())
+	{
+		if (UWaveParameterSubsystem* Subsystem = World->GetSubsystem<UWaveParameterSubsystem>())
+		{
+			Subsystem->UpdateWaterBodyConfig(this, WaveConfig);
+		}
+	}
+}
+
 // ===================================================================
-// Internal
+// Registry Entry
 // ===================================================================
 
 FWaterBodyEntry UOceanBodyComponent::BuildRegistryEntry() const
@@ -90,16 +204,10 @@ FWaterBodyEntry UOceanBodyComponent::BuildRegistryEntry() const
 	Entry.Owner = const_cast<UOceanBodyComponent*>(this);
 	Entry.BodyType = BodyType;
 	Entry.Priority = Priority;
-
-	// Wave config — already sorted by MakeDefaultOcean or prior SetWaveConfig calls,
-	// but the subsystem re-sorts on registration as a safety net.
 	Entry.WaveConfig = WaveConfig;
-	Entry.WaveConfig.bDirty = true;  // Force initial MID sync
-
-	// MID
+	Entry.WaveConfig.bDirty = true;
 	Entry.MaterialInstance = MaterialInstance;
 
-	// Bounds and BaseZ from world transform
 	const FVector WorldPos = GetComponentLocation();
 	Entry.BaseZ = WorldPos.Z;
 
@@ -113,16 +221,9 @@ FWaterBodyEntry UOceanBodyComponent::BuildRegistryEntry() const
 		break;
 	}
 	case EOceanBodyType::River:
-		// River bounds are derived from the spline in the actor.
-		// SplineData and RiverHalfWidth are set by RiverWaterBodyActor
-		// before calling RegisterWaterBody. Leave defaults here.
 		Entry.RiverHalfWidth = 0.0f;
 		break;
 	}
-
-	// Spline data is not set here — river actors populate it directly
-	// on the entry before or after registration.
-	// BlendZones are auto-detected by the subsystem.
 
 	return Entry;
 }

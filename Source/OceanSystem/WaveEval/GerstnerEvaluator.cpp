@@ -12,7 +12,7 @@ FGerstnerResult FGerstnerEvaluator::Evaluate(
 	float BaseZ, const FWaveConfig& Config)
 {
 	return EvaluateInternal(WorldPos, Time, BaseZ, Config,
-		Config.GetVisualLayerCount());
+		Config.GetTotalLayerCount());
 }
 
 FGerstnerResult FGerstnerEvaluator::EvaluatePhysics(
@@ -42,7 +42,7 @@ FGerstnerResult FGerstnerEvaluator::EvaluateAlongSpline(
 	const float SplineBaseZ = ClosestPoint.Z;
 
 	return EvaluateInternal(WorldPos, Time, SplineBaseZ, Config,
-		Config.GetVisualLayerCount());
+		Config.GetTotalLayerCount());
 }
 
 FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsAlongSpline(

@@ -5,6 +5,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
 #include "Engine/Texture2D.h"
+#include "Misc/App.h"
 
 DECLARE_STATS_GROUP(TEXT("OceanSystem"), STATGROUP_OceanSystem, STATCAT_Advanced);
 DECLARE_CYCLE_STAT(TEXT("WaveSubsystem Tick"), STAT_WaveSubsystemTick, STATGROUP_OceanSystem);
@@ -15,15 +16,11 @@ DECLARE_CYCLE_STAT(TEXT("WaveSubsystem Eval Full"), STAT_WaveSubsystemEvalFull, 
 // MID parameter name cache
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// MID parameter name cache
-// ---------------------------------------------------------------------------
-
 namespace OceanMID
 {
 	static const FName WaveCountName(TEXT("WaveCount"));
 	static const FName WaveTimeName(TEXT("WaveTime"));
-	static const FName WaveDataTexName(TEXT("WaveDataTex"));
+	static const FName WaveDataTexName(TEXT("WaveDataTexture"));
 }
 
 // ===================================================================
@@ -61,7 +58,11 @@ void UWaveParameterSubsystem::Tick(float DeltaTime)
 		return;
 	}
 
-	const float WorldTime = World->GetTimeSeconds();
+	// In-game: world time (respects pause, dilation).
+	// In editor (outside PIE): wall-clock time so wave preview animates.
+	const float WorldTime = World->IsGameWorld()
+		? World->GetTimeSeconds()
+		: static_cast<float>(FApp::GetCurrentTime());
 
 	for (FWaterBodyEntry& Entry : WaterBodies)
 	{
@@ -587,7 +588,7 @@ FGerstnerResult UWaveParameterSubsystem::EvaluateBody(
 // Parameter packing:
 //   Scalar  "WaveCount"   — number of active layers
 //   Scalar  "WaveTime"    — world time × TimeScale
-//   Texture "WaveDataTex" — 128×2 RGBA32F data texture
+//   Texture "WaveDataTexture" — 16×2 RGBA32F data texture
 //
 // The texture is created once per water body (lazily on first dirty
 // sync) and updated only when the wave config changes. Each frame
@@ -648,7 +649,7 @@ void UWaveParameterSubsystem::SyncMaterialInstance(FWaterBodyEntry& Entry, float
 
 UTexture2D* UWaveParameterSubsystem::CreateWaveDataTexture() const
 {
-	constexpr int32 Width = FWaveConfig::MaxLayers;   // 128
+	constexpr int32 Width = FWaveConfig::MaxLayers;   // 16
 	constexpr int32 Height = 2;
 
 	UTexture2D* Tex = UTexture2D::CreateTransient(Width, Height, PF_A32B32G32R32F);
@@ -711,4 +712,3 @@ void UWaveParameterSubsystem::UpdateWaveDataTexture(
 	Mip.BulkData.Unlock();
 	Texture->UpdateResource();
 }
-

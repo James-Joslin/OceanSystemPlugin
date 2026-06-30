@@ -7,7 +7,7 @@
 //
 // Two evaluation modes:
 //
-//   1. EvaluateGerstnerFromTexture — reads wave data from a 128x2 data
+//   1. EvaluateGerstnerFromTexture — reads wave data from a 16x2 data
 //      texture written by the subsystem. The material Custom node passes
 //      the texture as an input. No fixed array size, no parameter limit.
 //
@@ -28,7 +28,7 @@ static const float GERSTNER_TWO_PI = 6.28318530718f;
 // Texture-based evaluation (primary path)
 // ===================================================================
 //
-// WaveData texture layout (128 x 2, RGBA32F):
+// WaveData texture layout (16 x 2, RGBA32F):
 //   Row 0, Pixel N = (Amplitude, Wavelength, Steepness, Speed)
 //   Row 1, Pixel N = (Direction.X, Direction.Y, PhaseOffset, 0)
 //
@@ -46,27 +46,27 @@ void EvaluateGerstnerFromTexture(
     out float FoamMask)
 {
     float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
-    float  NormX = 0.0f;
-    float  NormY = 0.0f;
-    float  NormZ = 1.0f;
-    float  JacobianSum = 0.0f;
+    float NormX = 0.0f;
+    float NormY = 0.0f;
+    float NormZ = 1.0f;
+    float JacobianSum = 0.0f;
 
-    int Count = clamp(WaveCount, 0, 128);
+    int Count = clamp(WaveCount, 0, 16);
 
     [loop]
     for (int i = 0; i < Count; i++)
     {
         float4 wave = WaveData.Load(int3(i, 0, 0));
-        float4 dir  = WaveData.Load(int3(i, 1, 0));
+        float4 dir = WaveData.Load(int3(i, 1, 0));
 
-        float A     = wave.r;
-        float WL    = max(wave.g, 0.01f);
-        float Q     = wave.b;
-        float Spd   = wave.a;
-        float2 D    = dir.rg;
+        float A = wave.r;
+        float WL = max(wave.g, 0.01f);
+        float Q = wave.b;
+        float Spd = wave.a;
+        float2 D = dir.rg;
         float Phase = dir.b;
 
-        float k     = GERSTNER_TWO_PI / WL;
+        float k = GERSTNER_TWO_PI / WL;
         float theta = k * dot(D, WorldPos.xy) - k * Spd * Time + Phase;
 
         float sinTheta, cosTheta;
@@ -86,8 +86,8 @@ void EvaluateGerstnerFromTexture(
     }
 
     Displacement = TotalDisp;
-    Normal       = normalize(float3(NormX, NormY, NormZ));
-    FoamMask     = saturate(JacobianSum);
+    Normal = normalize(float3(NormX, NormY, NormZ));
+    FoamMask = saturate(JacobianSum);
 }
 
 void EvaluateGerstnerDisplacementFromTexture(
@@ -99,16 +99,16 @@ void EvaluateGerstnerDisplacementFromTexture(
 {
     float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
 
-    int Count = clamp(WaveCount, 0, 128);
+    int Count = clamp(WaveCount, 0, 16);
 
     [loop]
     for (int i = 0; i < Count; i++)
     {
         float4 wave = WaveData.Load(int3(i, 0, 0));
-        float4 dir  = WaveData.Load(int3(i, 1, 0));
+        float4 dir = WaveData.Load(int3(i, 1, 0));
 
-        float WL    = max(wave.g, 0.01f);
-        float k     = GERSTNER_TWO_PI / WL;
+        float WL = max(wave.g, 0.01f);
+        float k = GERSTNER_TWO_PI / WL;
         float theta = k * dot(dir.rg, WorldPos.xy) - k * wave.a * Time + dir.b;
 
         float sinTheta, cosTheta;
@@ -141,23 +141,23 @@ void EvaluateGerstner(
     out float FoamMask)
 {
     float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
-    float  NormX = 0.0f;
-    float  NormY = 0.0f;
-    float  NormZ = 1.0f;
-    float  JacobianSum = 0.0f;
+    float NormX = 0.0f;
+    float NormY = 0.0f;
+    float NormZ = 1.0f;
+    float JacobianSum = 0.0f;
 
     int Count = clamp(WaveCount, 0, 16);
 
     for (int i = 0; i < Count; i++)
     {
-        float k     = GERSTNER_TWO_PI / WL[i];
+        float k = GERSTNER_TWO_PI / WL[i];
         float theta = k * dot(Dir[i], WorldPos.xy) - k * Spd[i] * Time + Phase[i];
 
         float sinTheta, cosTheta;
         sincos(theta, sinTheta, cosTheta);
 
-        float Q  = Steep[i];
-        float A  = Amp[i];
+        float Q = Steep[i];
+        float A = Amp[i];
         float kA = k * A;
 
         TotalDisp.x += Q * A * Dir[i].x * cosTheta;
@@ -172,8 +172,8 @@ void EvaluateGerstner(
     }
 
     Displacement = TotalDisp;
-    Normal       = normalize(float3(NormX, NormY, NormZ));
-    FoamMask     = saturate(JacobianSum);
+    Normal = normalize(float3(NormX, NormY, NormZ));
+    FoamMask = saturate(JacobianSum);
 }
 
 void EvaluateGerstnerDisplacementOnly(
@@ -194,7 +194,7 @@ void EvaluateGerstnerDisplacementOnly(
 
     for (int i = 0; i < Count; i++)
     {
-        float k     = GERSTNER_TWO_PI / WL[i];
+        float k = GERSTNER_TWO_PI / WL[i];
         float theta = k * dot(Dir[i], WorldPos.xy) - k * Spd[i] * Time + Phase[i];
 
         float sinTheta, cosTheta;
