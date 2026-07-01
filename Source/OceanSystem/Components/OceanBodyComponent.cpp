@@ -1,4 +1,4 @@
-// Copyright James Joslin. All Rights Reserved.
+ï»¿// Copyright James Joslin. All Rights Reserved.
 
 #include "OceanBodyComponent.h"
 #include "../Subsystem/WaveParameterSubsystem.h"
@@ -13,7 +13,7 @@ UOceanBodyComponent::UOceanBodyComponent()
 }
 
 // ===================================================================
-// InitializeWaterBody — shared editor/runtime init
+// InitializeWaterBody ï¿½ shared editor/runtime init
 // ===================================================================
 
 void UOceanBodyComponent::InitializeWaterBody()
@@ -35,7 +35,7 @@ void UOceanBodyComponent::InitializeWaterBody()
 	else
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("OceanBodyComponent on '%s': BaseMaterial not set — no MID created."),
+			TEXT("OceanBodyComponent on '%s': BaseMaterial not set ï¿½ no MID created."),
 			*OwnerName);
 	}
 
@@ -85,16 +85,16 @@ void UOceanBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 }
 
 // ===================================================================
-// Editor — Property Change Handling
+// Editor ï¿½ Property Change Handling
 // ===================================================================
 //
 // Without this, editing WaveConfig.Layers directly in the Details panel
-// has no effect — the subsystem's copy of the config never updates and
+// has no effect ï¿½ the subsystem's copy of the config never updates and
 // the MID never resyncs. This catches property changes and pushes the
 // new values to the subsystem immediately.
 //
 // Note: OnConstruction also fires on every property change, but it
-// only ensures MID/registration exist — it doesn't rebuild tiles.
+// only ensures MID/registration exist ï¿½ it doesn't rebuild tiles.
 // This handler is responsible for the lightweight "mark dirty" path.
 // ===================================================================
 
@@ -123,7 +123,19 @@ void UOceanBodyComponent::PostEditChangeProperty(
 		}
 	}
 
-	// --- WaveGenerator property changed — auto-regenerate layers ---
+	// --- DetailWaveConfig edited directly ---
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, DetailWaveConfig))
+	{
+		DetailWaveConfig.SortLayers();
+		DetailWaveConfig.bDirty = true;
+
+		if (Subsystem)
+		{
+			Subsystem->UpdateDetailWaveConfig(this, DetailWaveConfig);
+		}
+	}
+
+	// --- WaveGenerator property changed â€” auto-regenerate main layers ---
 	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, WaveGenerator))
 	{
 		WaveConfig = WaveGenerator.Generate();
@@ -134,7 +146,18 @@ void UOceanBodyComponent::PostEditChangeProperty(
 		}
 	}
 
-	// --- BaseMaterial changed — need new MID ---
+	// --- DetailWaveGenerator property changed â€” auto-regenerate detail layers ---
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, DetailWaveGenerator))
+	{
+		DetailWaveConfig = DetailWaveGenerator.Generate();
+
+		if (Subsystem)
+		{
+			Subsystem->UpdateDetailWaveConfig(this, DetailWaveConfig);
+		}
+	}
+
+	// --- BaseMaterial changed â€” need new MID ---
 	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, BaseMaterial))
 	{
 		// Force MID recreation by nulling it first
@@ -142,7 +165,7 @@ void UOceanBodyComponent::PostEditChangeProperty(
 		InitializeWaterBody();
 	}
 
-	// --- Structural properties changed — re-register ---
+	// --- Structural properties changed â€” re-register ---
 	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, BodyType)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, Priority)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, Extent))
@@ -175,20 +198,38 @@ void UOceanBodyComponent::SetWaveConfig(const FWaveConfig& NewConfig)
 	}
 }
 
+void UOceanBodyComponent::SetDetailWaveConfig(const FWaveConfig& NewConfig)
+{
+	DetailWaveConfig = NewConfig;
+	DetailWaveConfig.SortLayers();
+	DetailWaveConfig.bDirty = true;
+
+	if (UWorld* World = GetWorld())
+	{
+		if (UWaveParameterSubsystem* Subsystem = World->GetSubsystem<UWaveParameterSubsystem>())
+		{
+			Subsystem->UpdateDetailWaveConfig(this, DetailWaveConfig);
+		}
+	}
+}
+
 void UOceanBodyComponent::GenerateWavesFromConfig()
 {
 	WaveConfig = WaveGenerator.Generate();
+	DetailWaveConfig = DetailWaveGenerator.Generate();
 
 	UE_LOG(LogTemp, Log,
-		TEXT("OceanBodyComponent '%s': Generated %d wave layers."),
+		TEXT("OceanBodyComponent '%s': Generated %d main + %d detail wave layers."),
 		GetOwner() ? *GetOwner()->GetName() : TEXT("null"),
-		WaveConfig.Layers.Num());
+		WaveConfig.Layers.Num(),
+		DetailWaveConfig.Layers.Num());
 
 	if (UWorld* World = GetWorld())
 	{
 		if (UWaveParameterSubsystem* Subsystem = World->GetSubsystem<UWaveParameterSubsystem>())
 		{
 			Subsystem->UpdateWaterBodyConfig(this, WaveConfig);
+			Subsystem->UpdateDetailWaveConfig(this, DetailWaveConfig);
 		}
 	}
 }
@@ -206,6 +247,8 @@ FWaterBodyEntry UOceanBodyComponent::BuildRegistryEntry() const
 	Entry.Priority = Priority;
 	Entry.WaveConfig = WaveConfig;
 	Entry.WaveConfig.bDirty = true;
+	Entry.DetailWaveConfig = DetailWaveConfig;
+	Entry.DetailWaveConfig.bDirty = true;
 	Entry.MaterialInstance = MaterialInstance;
 
 	const FVector WorldPos = GetComponentLocation();

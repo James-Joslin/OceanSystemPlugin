@@ -46,6 +46,36 @@ AOceanWaterBodyActor::AOceanWaterBodyActor()
 	// Generate initial wave config from generator
 	OceanBody->WaveConfig = Gen.Generate();
 
+	// --- Detail wave generator defaults for per-pixel normal chop ---
+	// Short wavelengths, higher steepness. These layers never displace
+	// geometry — they only perturb the surface normal per-pixel, giving
+	// crest sharpness that the mesh resolution can't resolve.
+	FWaveGeneratorConfig& Detail = OceanBody->DetailWaveGenerator;
+	Detail.NumWaves = 8;
+	Detail.Seed = 100;      // decorrelate from main
+	Detail.Randomness = 0.3f;
+	Detail.MinWavelength = 50.0f;    // 0.5m — capillary scale
+	Detail.MaxWavelength = 800.0f;   // 8m — fills gap between swell and normal maps
+	Detail.WavelengthFalloff = 1.5f;
+	Detail.MinAmplitude = 1.0f;     // tiny — normal perturbation only
+	Detail.MaxAmplitude = 15.0f;
+	Detail.AmplitudeFalloff = 1.5f;
+	Detail.LargeWaveSteepness = 0.4f;     // steeper than swell — visible crests
+	Detail.SmallWaveSteepness = 0.7f;
+	Detail.SteepnessFalloff = 1.0f;
+	Detail.DominantWindAngle = 0.0f;     // match main wind
+	Detail.DirectionAngularSpread = 160.0f;  // wide spread for choppy look
+	Detail.GlobalSpeedMultiplier = 0.6f;     // detail waves travel slower
+	Detail.NoiseStrength = 0.4f;
+	Detail.NoiseOctaves = 2;
+	Detail.NoiseLacunarity = 2.0f;
+	Detail.NoiseGain = 0.5f;
+	Detail.NoiseWarpStrength = 0.4f;
+	Detail.PhysicsLayerCount = 0;        // never evaluated on CPU
+	Detail.TimeScale = 1.0f;
+
+	OceanBody->DetailWaveConfig = Detail.Generate();
+
 	// --- Tiled ocean mesh ---
 	TiledMesh = CreateDefaultSubobject<UTiledWaterMeshComponent>(TEXT("TiledMesh"));
 	TiledMesh->SetupAttachment(OceanBody);

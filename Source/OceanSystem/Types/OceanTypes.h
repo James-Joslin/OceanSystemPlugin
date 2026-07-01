@@ -273,6 +273,10 @@ struct FWaterBodyEntry
 	/** Cached wave config (copied on register and on dirty). */
 	FWaveConfig WaveConfig;
 
+	/** Detail wave config — short-wavelength layers for per-pixel normals only.
+		Not evaluated on CPU. Populated by the wave generator. */
+	FWaveConfig DetailWaveConfig;
+
 	/** Spline reference for river gradient queries. Null for ocean/lake. */
 	TWeakObjectPtr<USplineComponent> SplineData;
 
@@ -284,6 +288,9 @@ struct FWaterBodyEntry
 
 	/** Runtime wave data texture for GPU lookup. Created/owned by subsystem. */
 	TWeakObjectPtr<UTexture2D> WaveDataTexture;
+
+	/** Runtime detail wave data texture for GPU lookup. Created/owned by subsystem. */
+	TWeakObjectPtr<UTexture2D> DetailWaveDataTexture;
 
 	/** Active blend zones involving this body. */
 	TArray<FBlendZoneEntry> BlendZones;

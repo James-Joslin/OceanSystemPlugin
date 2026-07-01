@@ -100,6 +100,12 @@ public:
 	void UpdateWaterBodyConfig(const UOceanBodyComponent* Body, const FWaveConfig& NewConfig);
 
 	/**
+	 * Update a body's detail wave config (per-pixel normal layers).
+	 * Re-sorts layers by amplitude and marks the detail config dirty.
+	 */
+	void UpdateDetailWaveConfig(const UOceanBodyComponent* Body, const FWaveConfig& NewDetailConfig);
+
+	/**
 	 * Mark a body dirty so its MID is resynced on the next tick.
 	 */
 	void MarkBodyDirty(const UOceanBodyComponent* Body);

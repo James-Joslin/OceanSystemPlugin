@@ -21,6 +21,10 @@ namespace OceanMID
 	static const FName WaveCountName(TEXT("WaveCount"));
 	static const FName WaveTimeName(TEXT("WaveTime"));
 	static const FName WaveDataTexName(TEXT("WaveDataTexture"));
+
+	// Detail layers — per-pixel normal evaluation
+	static const FName DetailWaveCountName(TEXT("DetailWaveCount"));
+	static const FName DetailWaveDataTexName(TEXT("DetailWaveDataTexture"));
 }
 
 // ===================================================================
@@ -87,6 +91,8 @@ void UWaveParameterSubsystem::RegisterWaterBody(const FWaterBodyEntry& Entry)
 	// Enforce amplitude-descending layer sort
 	NewEntry.WaveConfig.SortLayers();
 	NewEntry.WaveConfig.bDirty = true;
+	NewEntry.DetailWaveConfig.SortLayers();
+	NewEntry.DetailWaveConfig.bDirty = true;
 
 	const int32 NewIndex = WaterBodies.Add(MoveTemp(NewEntry));
 
@@ -131,6 +137,21 @@ void UWaveParameterSubsystem::UpdateWaterBodyConfig(
 	Entry.WaveConfig = NewConfig;
 	Entry.WaveConfig.SortLayers();
 	Entry.WaveConfig.bDirty = true;
+}
+
+void UWaveParameterSubsystem::UpdateDetailWaveConfig(
+	const UOceanBodyComponent* Body, const FWaveConfig& NewDetailConfig)
+{
+	const int32 Index = FindEntryIndex(Body);
+	if (Index == INDEX_NONE)
+	{
+		return;
+	}
+
+	FWaterBodyEntry& Entry = WaterBodies[Index];
+	Entry.DetailWaveConfig = NewDetailConfig;
+	Entry.DetailWaveConfig.SortLayers();
+	Entry.DetailWaveConfig.bDirty = true;
 }
 
 void UWaveParameterSubsystem::MarkBodyDirty(const UOceanBodyComponent* Body)
@@ -586,15 +607,17 @@ FGerstnerResult UWaveParameterSubsystem::EvaluateBody(
 // ===================================================================
 //
 // Parameter packing:
-//   Scalar  "WaveCount"   — number of active layers
-//   Scalar  "WaveTime"    — world time × TimeScale
-//   Texture "WaveDataTexture" — 16×2 RGBA32F data texture
+//   Scalar  "WaveCount"            — number of active main layers
+//   Scalar  "WaveTime"             — world time × TimeScale
+//   Texture "WaveDataTexture"      — 16×2 RGBA32F main wave data
+//   Scalar  "DetailWaveCount"      — number of active detail layers
+//   Texture "DetailWaveDataTexture" — 16×2 RGBA32F detail wave data
 //
-// The texture is created once per water body (lazily on first dirty
-// sync) and updated only when the wave config changes. Each frame
-// only the time scalar is pushed — no texture upload unless dirty.
+// Main and detail textures are created lazily and updated independently
+// only when their respective config is dirty. Each frame only the time
+// scalar is pushed — no texture upload unless dirty.
 //
-// Texture layout:
+// Texture layout (same for both):
 //   Row 0, Pixel N = (Amplitude, Wavelength, Steepness, Speed)
 //   Row 1, Pixel N = (Direction.X, Direction.Y, PhaseOffset, 0)
 //
@@ -614,33 +637,64 @@ void UWaveParameterSubsystem::SyncMaterialInstance(FWaterBodyEntry& Entry, float
 		OceanMID::WaveTimeName,
 		WorldTime * Entry.WaveConfig.TimeScale);
 
-	// Full texture sync only when dirty
-	if (!Entry.WaveConfig.bDirty)
+	const bool bMainDirty = Entry.WaveConfig.bDirty;
+	const bool bDetailDirty = Entry.DetailWaveConfig.bDirty;
+
+	// Nothing to sync if neither config changed
+	if (!bMainDirty && !bDetailDirty)
 	{
 		return;
 	}
 
-	// Create texture on first use
-	if (!Entry.WaveDataTexture.IsValid())
+	// ---- Main wave data texture ----
+	if (bMainDirty)
 	{
-		Entry.WaveDataTexture = CreateWaveDataTexture();
+		if (!Entry.WaveDataTexture.IsValid())
+		{
+			Entry.WaveDataTexture = CreateWaveDataTexture();
+		}
+
+		UTexture2D* Tex = Entry.WaveDataTexture.Get();
+		if (Tex)
+		{
+			UpdateWaveDataTexture(Tex, Entry.WaveConfig);
+
+			const int32 LayerCount = Entry.WaveConfig.Layers.Num();
+			MID->SetScalarParameterValue(OceanMID::WaveCountName, static_cast<float>(LayerCount));
+			MID->SetTextureParameterValue(OceanMID::WaveDataTexName, Tex);
+		}
+
+		Entry.WaveConfig.bDirty = false;
 	}
 
-	UTexture2D* Tex = Entry.WaveDataTexture.Get();
-	if (!Tex)
+	// ---- Detail wave data texture ----
+	if (bDetailDirty)
 	{
-		return;
+		if (Entry.DetailWaveConfig.Layers.Num() > 0)
+		{
+			if (!Entry.DetailWaveDataTexture.IsValid())
+			{
+				Entry.DetailWaveDataTexture = CreateWaveDataTexture();
+			}
+
+			UTexture2D* DetailTex = Entry.DetailWaveDataTexture.Get();
+			if (DetailTex)
+			{
+				UpdateWaveDataTexture(DetailTex, Entry.DetailWaveConfig);
+
+				const int32 DetailCount = Entry.DetailWaveConfig.Layers.Num();
+				MID->SetScalarParameterValue(OceanMID::DetailWaveCountName, static_cast<float>(DetailCount));
+				MID->SetTextureParameterValue(OceanMID::DetailWaveDataTexName, DetailTex);
+			}
+		}
+		else
+		{
+			// No detail layers — zero the count so the shader skips the loop
+			MID->SetScalarParameterValue(OceanMID::DetailWaveCountName, 0.0f);
+		}
+
+		Entry.DetailWaveConfig.bDirty = false;
 	}
-
-	// Write layer data into texture pixels
-	UpdateWaveDataTexture(Tex, Entry.WaveConfig);
-
-	// Push texture and wave count to MID
-	const int32 LayerCount = Entry.WaveConfig.Layers.Num();
-	MID->SetScalarParameterValue(OceanMID::WaveCountName, static_cast<float>(LayerCount));
-	MID->SetTextureParameterValue(OceanMID::WaveDataTexName, Tex);
-
-	Entry.WaveConfig.bDirty = false;
 }
 
 // ===================================================================

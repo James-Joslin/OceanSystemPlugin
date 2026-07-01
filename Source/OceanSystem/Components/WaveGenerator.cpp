@@ -154,7 +154,7 @@ FWaveConfig FWaveGeneratorConfig::Generate() const
 		// Clamp to safe ranges
 		WL = FMath::Max(WL, 0.1f);
 		Amp = FMath::Max(Amp, 0.001f);
-		Steep = FMath::Clamp(Steep, 0.0f, 1.0f);
+		Steep = FMath::Clamp(Steep, 0.0f, 10.0f);
 
 		// ---- Direction ----
 		float RawOffsetDeg = FMath::Fmod(static_cast<float>(i) * GoldenAngleDeg, 360.0f);

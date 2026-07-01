@@ -1,4 +1,4 @@
-// Copyright James Joslin. All Rights Reserved.
+﻿// Copyright James Joslin. All Rights Reserved.
 
 #pragma once
 
@@ -26,6 +26,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Waves")
 	FWaveConfig WaveConfig;
 
+	/** Short-wavelength detail layers — evaluated per-pixel for normals only.
+		Never displace vertices. Never evaluated on CPU. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Waves|Detail")
+	FWaveConfig DetailWaveConfig;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Bounds",
 		meta = (EditCondition = "BodyType != EOceanBodyType::River"))
 	FVector2D Extent = FVector2D(10000.0, 10000.0);
@@ -47,6 +52,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Wave Generator")
 	FWaveGeneratorConfig WaveGenerator;
 
+	/** Generator for per-pixel detail normal layers.
+		Short wavelengths, higher steepness — never displace geometry. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Wave Generator|Detail")
+	FWaveGeneratorConfig DetailWaveGenerator;
+
+	/** Regenerate both main and detail wave configs from their generators. */
 	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Water Body|Wave Generator")
 	void GenerateWavesFromConfig();
 
@@ -57,7 +68,7 @@ public:
 	/**
 	 * Create MID (if needed) and register with the wave subsystem.
 	 * Called from the owning actor's OnConstruction (editor preview)
-	 * and from BeginPlay (runtime). Safe to call multiple times �
+	 * and from BeginPlay (runtime). Safe to call multiple times �
 	 * skips MID recreation if the parent material hasn't changed.
 	 */
 	void InitializeWaterBody();
@@ -71,6 +82,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Water Body|Waves")
 	void SetWaveConfig(const FWaveConfig& NewConfig);
+
+	/** Update the detail wave config at runtime. Pushes to the subsystem MID. */
+	UFUNCTION(BlueprintCallable, Category = "Water Body|Waves")
+	void SetDetailWaveConfig(const FWaveConfig& NewConfig);
 
 protected:
 	virtual void BeginPlay() override;

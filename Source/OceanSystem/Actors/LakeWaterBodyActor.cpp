@@ -41,6 +41,34 @@ ALakeWaterBodyActor::ALakeWaterBodyActor()
 
 	OceanBody->WaveConfig = Gen.Generate();
 
+	// --- Detail wave generator defaults for lake surface chop ---
+	// Gentler than ocean — smaller amplitudes, narrower spread.
+	FWaveGeneratorConfig& Detail = OceanBody->DetailWaveGenerator;
+	Detail.NumWaves = 6;
+	Detail.Seed = 142;      // decorrelate from main
+	Detail.Randomness = 0.2f;
+	Detail.MinWavelength = 40.0f;    // fine ripples
+	Detail.MaxWavelength = 500.0f;
+	Detail.WavelengthFalloff = 1.5f;
+	Detail.MinAmplitude = 0.5f;
+	Detail.MaxAmplitude = 5.0f;
+	Detail.AmplitudeFalloff = 1.5f;
+	Detail.LargeWaveSteepness = 0.25f;
+	Detail.SmallWaveSteepness = 0.45f;
+	Detail.SteepnessFalloff = 1.0f;
+	Detail.DominantWindAngle = 45.0f;    // match main
+	Detail.DirectionAngularSpread = 140.0f;
+	Detail.GlobalSpeedMultiplier = 0.5f;
+	Detail.NoiseStrength = 0.3f;
+	Detail.NoiseOctaves = 2;
+	Detail.NoiseLacunarity = 2.0f;
+	Detail.NoiseGain = 0.5f;
+	Detail.NoiseWarpStrength = 0.3f;
+	Detail.PhysicsLayerCount = 0;        // never on CPU
+	Detail.TimeScale = 1.0f;
+
+	OceanBody->DetailWaveConfig = Detail.Generate();
+
 	TiledMesh = CreateDefaultSubobject<UTiledWaterMeshComponent>(TEXT("TiledMesh"));
 	TiledMesh->SetupAttachment(OceanBody);
 }

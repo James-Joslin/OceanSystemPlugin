@@ -114,13 +114,13 @@ struct OCEANSYSTEM_API FWaveGeneratorConfig
 	 * rolling swells. Above 0.8, waves fold and drive the foam mask.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Generator|Steepness",
-		meta = (ClampMin = "0.0", ClampMax = "3.0", UIMin = "0.01", UIMax = "3"))
-	float LargeWaveSteepness = 0.08f;
+		meta = (ClampMin = "0.0", ClampMax = "10.0", UIMin = "0.01", UIMax = "10"))
+	float LargeWaveSteepness = 2.0f;
 
 	/** Steepness for the smallest waves. Higher values (0.5-0.8) give sharp peaked chop. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Generator|Steepness",
-		meta = (ClampMin = "0.0", ClampMax = "3.0", UIMin = "0.01", UIMax = "3.0"))
-	float SmallWaveSteepness = 0.65f;
+		meta = (ClampMin = "0.0", ClampMax = "10.0", UIMin = "0.01", UIMax = "10"))
+	float SmallWaveSteepness = 3.0f;
 
 	/**
 	 * Power curve for steepness interpolation.
