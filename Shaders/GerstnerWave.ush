@@ -1,39 +1,38 @@
 // ---------------------------------------------------------------------------
-// GerstnerWave.ush — GPU Gerstner Displacement, Normal, and Foam Mask
+// GerstnerWave.ush — GPU Gerstner Displacement, Normal, Foam, and Effects
 // ---------------------------------------------------------------------------
 //
 // Include path: /OceanSystem/GerstnerWave.ush
 // (mapped by OceanSystemModule::StartupModule)
 //
-// Evaluation modes:
+// CORE EVALUATION:
+//   EvaluateGerstnerFromTexture        — full vertex: displacement + normal + foam
+//   EvaluateGerstnerDisplacementFromTexture — vertex: displacement only (physics-matched)
+//   EvaluateGerstnerNormalFromTexture   — pixel: per-pixel analytical normal + foam
+//   EvaluateGerstnerDetailNormalFromTexture — pixel: detail normal from second texture
 //
-//   1. EvaluateGerstnerFromTexture — vertex shader: full displacement,
-//      normal, and foam from the main data texture. Used for WPO.
+// VISUAL WRAPPERS (GPU-only, no CPU parity):
+//   EvaluateGerstnerDisplacementVisual — adds choppiness, crest sharpening, clamping
+//   EvaluateGerstnerNormalVisual       — normal matching sharpened displacement
 //
-//   2. EvaluateGerstnerDisplacementFromTexture — vertex shader:
-//      displacement only (cheaper path when normal is computed per-pixel).
+// EFFECTS:
+//   DomainWarpPosition     — bends straight crests into organic curves
+//   ComputeSubsurfaceMask  — light transmission through thin crests
+//   ComputeBreakingFoam    — height/slope foam with noise erosion
 //
-//   3. EvaluateGerstnerNormalFromTexture — pixel shader: per-pixel
-//      analytical normal and foam from the main wave layers. Evaluated
-//      at the DISPLACED world position (AbsoluteWorldPosition post-WPO).
-//      This gives crest sharpness that vertex interpolation destroys.
+// UTILITIES:
+//   SharpenSine / SharpenSineDerivative — asymmetric crest/trough shaping
+//   ClampHorizontalDisplacement         — prevent triangle self-intersection
+//   GetMaxAmplitudeFromTexture          — read sum of amplitudes from wave data
+//   BlendNormals_RNM / BlendNormals_Lerp — normal blending
+//   OceanValueNoise2D                   — smooth 2D hash noise for foam erosion
 //
-//   4. EvaluateGerstnerDetailNormalFromTexture — pixel shader: per-pixel
-//      normal from a SECOND data texture of short-wavelength detail
-//      layers. Distance-faded to avoid evaluating tiny waves at range.
-//
-//   5. EvaluateGerstner / EvaluateGerstnerDisplacementOnly — legacy
-//      array-based entry points for direct testing.
-//
-// Normal map integration:
-//   BlendNormals_RNM blends two tangent-space normals using Reoriented
-//   Normal Mapping. Use it to layer normal map samples on top of the
-//   analytical Gerstner normal in a Custom node, or use UE's built-in
-//   BlendAngleCorrectedNormals node in the material graph.
+// LEGACY:
+//   EvaluateGerstner / EvaluateGerstnerDisplacementOnly — array-based
 //
 // CPU Parity:
-//   GerstnerEvaluator.cpp mirrors the core Gerstner math exactly.
-//   Any change to the wave loop must be reflected there and vice versa.
+//   GerstnerEvaluator.cpp mirrors the CORE functions exactly.
+//   Visual wrappers and effects are GPU-only.
 // ---------------------------------------------------------------------------
 
 #ifndef GERSTNER_WAVE_USH
@@ -41,16 +40,140 @@
 
 static const float GERSTNER_TWO_PI = 6.28318530718f;
 
+
 // ===================================================================
-// Texture-based evaluation — Full (vertex shader)
+// Utilities
+// ===================================================================
+
+/**
+ * Read the effective maximum wave height from a wave data texture.
+ * Sums all non-zero amplitudes and scales by 0.6 (waves rarely
+ * all align perfectly). Use for normalising height-dependent effects.
+ */
+float GetMaxAmplitudeFromTexture(Texture2D WaveData)
+{
+    float MaxAmp = 0.0f;
+    for (int i = 0; i < 16; i++)
+    {
+        float A = WaveData.Load(int3(i, 0, 0)).r;
+        if (A < 0.001f)
+            break;
+        MaxAmp += A;
+    }
+    return MaxAmp * 0.6f;
+}
+
+/**
+ * Smoothed 2D value noise from a hash function.
+ * Returns [0, 1]. Uses smoothstep interpolation to avoid
+ * grid artifacts. Suitable for foam erosion and detail masks.
+ */
+float OceanValueNoise2D(float2 P)
+{
+    float2 I = floor(P);
+    float2 F = frac(P);
+    F = F * F * (3.0f - 2.0f * F);
+
+    float n00 = frac(sin(dot(I + float2(0, 0), float2(127.1f, 311.7f))) * 43758.5453f);
+    float n10 = frac(sin(dot(I + float2(1, 0), float2(127.1f, 311.7f))) * 43758.5453f);
+    float n01 = frac(sin(dot(I + float2(0, 1), float2(127.1f, 311.7f))) * 43758.5453f);
+    float n11 = frac(sin(dot(I + float2(1, 1), float2(127.1f, 311.7f))) * 43758.5453f);
+
+    return lerp(lerp(n00, n10, F.x), lerp(n01, n11, F.x), F.y);
+}
+
+/**
+ * Two-octave value noise with irrational scale ratio to prevent
+ * visible tiling. Used internally by ComputeBreakingFoam.
+ */
+float OceanFoamNoise2D(float2 P)
+{
+    float n1 = OceanValueNoise2D(P);
+    float n2 = OceanValueNoise2D(P * 2.7f + float2(5.2f, 1.3f));
+    return n1 * 0.6f + n2 * 0.4f;
+}
+
+/**
+ * Remap sine for asymmetric crest/trough shaping.
+ *   Sharpness = 1.0: unchanged sine
+ *   Sharpness = 1.5: noticeable peak sharpening
+ *   Sharpness = 2.5: very peaked crests, flat troughs
+ */
+float SharpenSine(float SinValue, float Sharpness)
+{
+    float Mapped = SinValue * 0.5f + 0.5f;
+    float Sharp = pow(Mapped, Sharpness);
+    return Sharp * 2.0f - 1.0f;
+}
+
+/**
+ * Derivative of SharpenSine with respect to theta.
+ * Used in the normal calculation to match sharpened displacement.
+ */
+float SharpenSineDerivative(float SinValue, float CosValue, float Sharpness)
+{
+    float Mapped = SinValue * 0.5f + 0.5f;
+    return Sharpness * pow(max(Mapped, 0.001f), Sharpness - 1.0f) * CosValue;
+}
+
+/**
+ * Clamp horizontal displacement to prevent triangle self-intersection.
+ * MaxHorizontal: safe limit in world units (shortest wavelength / 4).
+ */
+float3 ClampHorizontalDisplacement(float3 Displacement, float MaxHorizontal)
+{
+    float2 Horiz = Displacement.xy;
+    float HorizLen = length(Horiz);
+    if (HorizLen > MaxHorizontal)
+    {
+        Horiz = Horiz * (MaxHorizontal / HorizLen);
+    }
+    return float3(Horiz, Displacement.z);
+}
+
+
+// ===================================================================
+// Domain warp — bends straight Gerstner crests into organic curves
+// ===================================================================
+//
+// Three octaves of sinusoidal displacement at irrational frequency
+// ratios so the warp itself never looks periodic. Slow time offsets
+// make the curvature drift frame to frame.
+//
+// Apply to WorldPos BEFORE any Gerstner evaluation. Feed the warped
+// position into displacement, normal, and detail nodes identically
+// so normals match geometry.
+// ===================================================================
+
+float3 DomainWarpPosition(
+    float3 WorldPos,
+    float Time,
+    float WarpFrequency,
+    float WarpAmount)
+{
+    float2 wp = WorldPos.xy * WarpFrequency;
+
+    float wx = sin(wp.y * 1.0f + Time * 0.05f) * WarpAmount
+             + sin(wp.y * 2.3f + wp.x * 0.7f + Time * 0.03f) * WarpAmount * 0.5f
+             + sin(wp.y * 4.1f + wp.x * 1.3f + Time * 0.07f) * WarpAmount * 0.2f;
+
+    float wy = cos(wp.x * 1.0f + Time * 0.04f) * WarpAmount
+             + cos(wp.x * 1.9f + wp.y * 0.6f + Time * 0.06f) * WarpAmount * 0.5f
+             + cos(wp.x * 3.7f + wp.y * 1.1f + Time * 0.05f) * WarpAmount * 0.2f;
+
+    return float3(WorldPos.x + wx, WorldPos.y + wy, WorldPos.z);
+}
+
+
+// ===================================================================
+// Core evaluation — Full (vertex shader)
 // ===================================================================
 //
 // WaveData texture layout (16 x 2, RGBA32F):
 //   Row 0, Pixel N = (Amplitude, Wavelength, Steepness, Speed)
 //   Row 1, Pixel N = (Direction.X, Direction.Y, PhaseOffset, 0)
 //
-// Read via Texture2D.Load(int3(layerIndex, row, mip=0)).
-// No sampler, no filtering — pure integer-addressed data lookup.
+// CPU PARITY: GerstnerEvaluator.cpp mirrors this exactly.
 // ===================================================================
 
 void EvaluateGerstnerFromTexture(
@@ -107,14 +230,12 @@ void EvaluateGerstnerFromTexture(
     FoamMask = saturate(JacobianSum);
 }
 
+
 // ===================================================================
-// Texture-based — Displacement only (vertex shader, cheaper)
+// Core evaluation — Displacement only (vertex shader, cheaper)
 // ===================================================================
 //
-// Use this when the normal will be computed per-pixel via
-// EvaluateGerstnerNormalFromTexture. Avoids computing normal
-// accumulation in the vertex shader since it would just be
-// thrown away.
+// CPU PARITY: GerstnerEvaluator.cpp mirrors this exactly.
 // ===================================================================
 
 void EvaluateGerstnerDisplacementFromTexture(
@@ -149,21 +270,72 @@ void EvaluateGerstnerDisplacementFromTexture(
     Displacement = TotalDisp;
 }
 
+
 // ===================================================================
-// Texture-based — Per-pixel normal from main layers (pixel shader)
+// Visual displacement — choppiness, crest sharpening, clamping
 // ===================================================================
 //
-// Re-evaluates the SAME main wave data at the displaced world position
-// to produce a per-pixel analytical normal. This is the single biggest
-// visual improvement over vertex-interpolated normals — crest sharpness
-// is preserved at all mesh resolutions.
+// GPU-ONLY. Wraps the core Gerstner loop with cosmetic effects:
+//   - Wavelength-dependent choppiness (SmallWaveChop)
+//   - Crest sharpening via power-curved sine (CrestSharpness)
+//   - Horizontal displacement clamping (MaxHorizontal)
 //
-// IMPORTANT: Pass AbsoluteWorldPosition (post-WPO) as DisplacedWorldPos,
-// NOT the undisplaced grid position. The normal must be evaluated at the
-// point where the surface actually is, or detail slides on the swell.
+// None of these affect CPU buoyancy evaluation.
+// ===================================================================
+
+void EvaluateGerstnerDisplacementVisual(
+    float3 WorldPos,
+    float Time,
+    int WaveCount,
+    Texture2D WaveData,
+    float Choppiness,
+    float SmallWaveChop,
+    float CrestSharpness,
+    float MaxHorizontal,
+    out float3 Displacement)
+{
+    float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
+
+    int Count = clamp(WaveCount, 0, 16);
+    float MaxWL = WaveData.Load(int3(0, 0, 0)).g;
+
+    [loop]
+    for (int i = 0; i < Count; i++)
+    {
+        float4 wave = WaveData.Load(int3(i, 0, 0));
+        float4 dir = WaveData.Load(int3(i, 1, 0));
+
+        float A = wave.r;
+        float WL = max(wave.g, 0.01f);
+        float Q = wave.b;
+        float Spd = wave.a;
+        float2 D = dir.rg;
+        float Phase = dir.b;
+
+        float k = GERSTNER_TWO_PI / WL;
+        float theta = k * dot(D, WorldPos.xy) - k * Spd * Time + Phase;
+
+        float sinTheta, cosTheta;
+        sincos(theta, sinTheta, cosTheta);
+
+        float t = 1.0f - saturate(WL / max(MaxWL, 1.0f));
+        float Chop = Choppiness * lerp(1.0f, SmallWaveChop, t * t);
+
+        TotalDisp.x += Chop * Q * A * D.x * cosTheta;
+        TotalDisp.y += Chop * Q * A * D.y * cosTheta;
+        TotalDisp.z += A * SharpenSine(sinTheta, CrestSharpness);
+    }
+
+    Displacement = ClampHorizontalDisplacement(TotalDisp, MaxHorizontal);
+}
+
+
+// ===================================================================
+// Per-pixel normal from main layers (pixel shader)
+// ===================================================================
 //
-// Cost: re-computes sin/cos for the main layers. Acceptable for 4-8
-// swell layers. If perf is tight, reduce WaveCount for the pixel pass.
+// CPU PARITY: GerstnerEvaluator.cpp mirrors this exactly.
+// Pass AbsoluteWorldPosition (post-WPO) as DisplacedWorldPos.
 // ===================================================================
 
 void EvaluateGerstnerNormalFromTexture(
@@ -185,13 +357,13 @@ void EvaluateGerstnerNormalFromTexture(
     for (int i = 0; i < Count; i++)
     {
         float4 wave = WaveData.Load(int3(i, 0, 0));
-        float4 dir  = WaveData.Load(int3(i, 1, 0));
+        float4 dir = WaveData.Load(int3(i, 1, 0));
 
-        float A   = wave.r;
-        float WL  = max(wave.g, 0.01f);
-        float Q   = wave.b;
+        float A = wave.r;
+        float WL = max(wave.g, 0.01f);
+        float Q = wave.b;
         float Spd = wave.a;
-        float2 D  = dir.rg;
+        float2 D = dir.rg;
         float Phase = dir.b;
 
         float k = GERSTNER_TWO_PI / WL;
@@ -213,28 +385,67 @@ void EvaluateGerstnerNormalFromTexture(
     FoamMask = saturate(JacobianSum);
 }
 
+
 // ===================================================================
-// Texture-based — Per-pixel detail normal (pixel shader)
+// Visual normal — matches sharpened displacement
 // ===================================================================
 //
-// Evaluates a SEPARATE set of short-wavelength layers from a second
-// data texture. These layers exist only for visual normal perturbation
-// — they never displace vertices and are never evaluated on CPU.
-//
-// Distance fade: detail normals are expensive and invisible at range.
-// DistanceFade should be computed outside this function as:
-//
-//   float DistanceFade = 1.0 - saturate(
-//       (CameraDistance - DetailFadeStart) / (DetailFadeEnd - DetailFadeStart));
-//
-// When DistanceFade = 0 the function still runs the loop but the
-// normal contribution is zeroed. For a branch-based early-out:
-//
-//   if (DistanceFade > 0.001f)
-//       EvaluateGerstnerDetailNormalFromTexture(...);
-//
-// The output normal is in world space (Z-up). Combine with the main
-// Gerstner normal using BlendNormals_RNM or UE's blend nodes.
+// GPU-ONLY. Uses SharpenSineDerivative so the normal matches the
+// crest shape from EvaluateGerstnerDisplacementVisual.
+// ===================================================================
+
+void EvaluateGerstnerNormalVisual(
+    float3 DisplacedWorldPos,
+    float Time,
+    int WaveCount,
+    Texture2D WaveData,
+    float CrestSharpness,
+    out float3 Normal,
+    out float FoamMask)
+{
+    float NormX = 0.0f;
+    float NormY = 0.0f;
+    float NormZ = 1.0f;
+    float JacobianSum = 0.0f;
+
+    int Count = clamp(WaveCount, 0, 16);
+
+    [loop]
+    for (int i = 0; i < Count; i++)
+    {
+        float4 wave = WaveData.Load(int3(i, 0, 0));
+        float4 dir = WaveData.Load(int3(i, 1, 0));
+
+        float A = wave.r;
+        float WL = max(wave.g, 0.01f);
+        float Q = wave.b;
+        float Spd = wave.a;
+        float2 D = dir.rg;
+        float Phase = dir.b;
+
+        float k = GERSTNER_TWO_PI / WL;
+        float theta = k * dot(D, DisplacedWorldPos.xy) - k * Spd * Time + Phase;
+
+        float sinTheta, cosTheta;
+        sincos(theta, sinTheta, cosTheta);
+
+        float kA = k * A;
+        float SharpDeriv = SharpenSineDerivative(sinTheta, cosTheta, CrestSharpness);
+
+        NormX -= D.x * kA * cosTheta;
+        NormY -= D.y * kA * cosTheta;
+        NormZ -= Q * kA * SharpDeriv;
+
+        JacobianSum += Q * kA * cosTheta;
+    }
+
+    Normal = normalize(float3(NormX, NormY, NormZ));
+    FoamMask = saturate(JacobianSum);
+}
+
+
+// ===================================================================
+// Per-pixel detail normal (pixel shader)
 // ===================================================================
 
 void EvaluateGerstnerDetailNormalFromTexture(
@@ -257,13 +468,13 @@ void EvaluateGerstnerDetailNormalFromTexture(
     for (int i = 0; i < Count; i++)
     {
         float4 wave = DetailWaveData.Load(int3(i, 0, 0));
-        float4 dir  = DetailWaveData.Load(int3(i, 1, 0));
+        float4 dir = DetailWaveData.Load(int3(i, 1, 0));
 
-        float A   = wave.r;
-        float WL  = max(wave.g, 0.01f);
-        float Q   = wave.b;
+        float A = wave.r;
+        float WL = max(wave.g, 0.01f);
+        float Q = wave.b;
         float Spd = wave.a;
-        float2 D  = dir.rg;
+        float2 D = dir.rg;
         float Phase = dir.b;
 
         float k = GERSTNER_TWO_PI / WL;
@@ -281,7 +492,6 @@ void EvaluateGerstnerDetailNormalFromTexture(
         JacobianSum += Q * kA * cosTheta;
     }
 
-    // Fade detail contribution toward flat (0,0,1) at distance
     NormX *= DistanceFade;
     NormY *= DistanceFade;
     NormZ = lerp(1.0f, NormZ, DistanceFade);
@@ -290,40 +500,136 @@ void EvaluateGerstnerDetailNormalFromTexture(
     DetailFoamMask = saturate(JacobianSum) * DistanceFade;
 }
 
+
 // ===================================================================
-// Normal blending utilities
+// Normal blending
 // ===================================================================
 
-/**
- * Reoriented Normal Mapping (RNM) blend.
- *
- * Combines two normals (both expected as tangent-space-style vectors
- * with Z-up = flat) more correctly than additive blending. Preserves
- * curvature from both inputs rather than flattening detail.
- *
- * Use case: blending the analytical Gerstner normal with sampled
- * normal maps in a Custom node. If using material graph nodes
- * instead, UE's BlendAngleCorrectedNormals does the same thing.
- *
- * Both inputs should be normalised. Output is normalised.
- */
 float3 BlendNormals_RNM(float3 Base, float3 Detail)
 {
-    // Reoriented Normal Mapping (Barré-Brisebois & Hill 2012)
     float3 t = Base + float3(0.0f, 0.0f, 1.0f);
     float3 u = Detail * float3(-1.0f, -1.0f, 1.0f);
     return normalize(t * dot(t, u) - u * t.z);
 }
 
-/**
- * Blend two world-space normals with a weight.
- * Alpha = 0 → pure Base, Alpha = 1 → pure Detail.
- * Cheaper than RNM but less correct for strong perturbations.
- */
 float3 BlendNormals_Lerp(float3 Base, float3 Detail, float Alpha)
 {
     return normalize(lerp(Base, Detail, Alpha));
 }
+
+
+// ===================================================================
+// Subsurface scattering mask
+// ===================================================================
+//
+// Computes a per-pixel mask for light transmission through thin
+// wave crests — the turquoise glow when looking toward the sun.
+//
+//   SSSPower:     tightens view-light alignment (3.0 default)
+//   SSSHeightBias: shifts where on the wave SSS starts (0.0 default)
+//   SSSSpread:    how much facing-away contributes (1.0 default)
+//   SSSIntensity: final multiplier (1.0 default)
+//
+// Feed output into: Lerp(0, SSSColor, output) → Emissive
+// SSSColor: deep teal, e.g. (0.1, 0.45, 0.35)
+// ===================================================================
+
+float ComputeSubsurfaceMask(
+    float WaveHeight,
+    Texture2D WaveData,
+    float3 WorldNormal,
+    float3 ViewDir,
+    float3 LightDir,
+    float SSSPower,
+    float SSSHeightBias,
+    float SSSSpread,
+    float SSSIntensity)
+{
+    float MaxAmp = GetMaxAmplitudeFromTexture(WaveData);
+    float HeightFactor = saturate(WaveHeight / max(MaxAmp, 0.01f) - SSSHeightBias);
+    float ViewLightDot = pow(saturate(dot(-ViewDir, LightDir)), SSSPower);
+    float FacingAway = lerp(1.0f, 1.0f - saturate(dot(WorldNormal, ViewDir)), SSSSpread);
+
+    return HeightFactor * ViewLightDot * FacingAway * SSSIntensity;
+}
+
+
+// ===================================================================
+// Breaking foam with noise erosion
+// ===================================================================
+//
+// Three foam sources combined:
+//   1. Height foam — tops of waves foam from wind shear
+//   2. Slope foam  — steep faces indicate turbulence
+//   3. Noise erosion — breaks uniform foam into organic patches
+//
+// Combine output with Jacobian foam: saturate(Jacobian + Breaking)
+//
+//   HeightThresh:      where height foam starts (0.5 default)
+//   SlopeThresh:       steepness for slope foam (0.3 default)
+//   HeightSharpness:   hard/soft height foam edge (2.0 default)
+//   SlopeSharpness:    hard/soft slope foam edge (2.0 default)
+//   FoamNoiseScale:    noise spatial frequency in cm (500.0 default)
+//   FoamNoiseSpeed:    noise drift speed (0.3 default)
+//   FoamNoiseErosion:  how patchy the foam is, 0=solid 1=wispy (0.5 default)
+//   BreakingIntensity: final multiplier (0.6 default)
+// ===================================================================
+
+float ComputeBreakingFoam(
+    float WaveHeight,
+    float3 WorldPos,
+    float Time,
+    Texture2D WaveData,
+    float3 WorldNormal,
+    float HeightThresh,
+    float SlopeThresh,
+    float HeightSharpness,
+    float SlopeSharpness,
+    float FoamNoiseScale,
+    float FoamNoiseSpeed,
+    float FoamNoiseErosion,
+    float BreakingIntensity)
+{
+    // --- Max amplitude ---
+    float MaxAmp = GetMaxAmplitudeFromTexture(WaveData);
+    float NormHeight = WaveHeight / max(MaxAmp, 0.01f);
+
+    // --- Height foam ---
+    float HeightFoam = saturate(
+        (NormHeight - HeightThresh) / max(1.0f - HeightThresh, 0.001f));
+    HeightFoam = pow(HeightFoam, 1.0f / max(HeightSharpness, 0.1f));
+
+    // --- Slope foam ---
+    float SlopeAngle = 1.0f - WorldNormal.z;
+    float SlopeFoam = saturate(
+        (SlopeAngle - SlopeThresh) / max(1.0f - SlopeThresh, 0.001f));
+    SlopeFoam = pow(SlopeFoam, 1.0f / max(SlopeSharpness, 0.1f));
+
+    float RawFoam = max(HeightFoam, SlopeFoam);
+
+    // --- Noise erosion ---
+    float2 NoiseUV = WorldPos.xy / max(FoamNoiseScale, 1.0f);
+    float2 Drift = float2(
+        Time * FoamNoiseSpeed,
+        Time * FoamNoiseSpeed * 0.7f);
+
+    float Noise = OceanFoamNoise2D(NoiseUV + Drift);
+
+    // Erode: foam survives where noise + foam exceeds the erosion threshold.
+    // smoothstep gives soft wispy edges rather than a hard cutoff.
+    float Eroded = smoothstep(
+        FoamNoiseErosion,
+        FoamNoiseErosion + 0.3f,
+        Noise + RawFoam);
+
+    float FinalFoam = lerp(
+        RawFoam,
+        RawFoam * Eroded,
+        saturate(FoamNoiseErosion * 2.0f));
+
+    return FinalFoam * BreakingIntensity;
+}
+
 
 // ===================================================================
 // Array-based evaluation (legacy / direct testing)
@@ -409,294 +715,6 @@ void EvaluateGerstnerDisplacementOnly(
     }
 
     Displacement = TotalDisp;
-}
-
-// ===================================================================
-// Domain warp — bends straight Gerstner crests into organic curves
-// ===================================================================
-//
-// Three octaves of sinusoidal displacement at irrational frequency
-// ratios so the warp itself never looks periodic. Slow time offsets
-// make the curvature drift frame to frame.
-//
-// Apply to WorldPos BEFORE any Gerstner evaluation. Feed the warped
-// position into displacement, normal, and detail nodes identically
-// so normals match geometry.
-// ===================================================================
-
-float3 DomainWarpPosition(
-    float3 WorldPos,
-    float Time,
-    float WarpFrequency,
-    float WarpAmount)
-{
-    float2 wp = WorldPos.xy * WarpFrequency;
-
-    float wx = sin(wp.y * 1.0 + Time * 0.05) * WarpAmount
-             + sin(wp.y * 2.3 + wp.x * 0.7 + Time * 0.03) * WarpAmount * 0.5
-             + sin(wp.y * 4.1 + wp.x * 1.3 + Time * 0.07) * WarpAmount * 0.2;
-
-    float wy = cos(wp.x * 1.0 + Time * 0.04) * WarpAmount
-             + cos(wp.x * 1.9 + wp.y * 0.6 + Time * 0.06) * WarpAmount * 0.5
-             + cos(wp.x * 3.7 + wp.y * 1.1 + Time * 0.05) * WarpAmount * 0.2;
-
-    return float3(WorldPos.x + wx, WorldPos.y + wy, WorldPos.z);
-}
-
-// ===================================================================
-// Wave sharpening — peaked crests, flattened troughs
-// ===================================================================
-//
-// Standard Gerstner uses sin(theta) for vertical displacement, which
-// produces symmetrical crests and troughs. Real ocean waves are
-// asymmetric: crests are narrow and peaked, troughs are broad and
-// flat. This approximates that by remapping the sine through a
-// power curve.
-//
-// Sharpness = 1.0: unchanged sine (symmetric)
-// Sharpness = 1.5: noticeable peak sharpening
-// Sharpness = 2.5: very peaked crests, flat troughs
-//
-// Use inside the displacement loop:
-//   TotalDisp.z += A * SharpenSine(sinTheta, Sharpness);
-// instead of:
-//   TotalDisp.z += A * sinTheta;
-// ===================================================================
-
-float SharpenSine(float SinValue, float Sharpness)
-{
-    float Mapped = SinValue * 0.5 + 0.5;
-    float Sharp = pow(Mapped, Sharpness);
-    return Sharp * 2.0 - 1.0;
-}
-
-// ===================================================================
-// Subsurface scattering mask
-// ===================================================================
-//
-// Thin wave crests transmit light — the characteristic turquoise
-// glow you see when looking toward the sun through a wave. This
-// computes a mask for where that effect should appear.
-//
-// Three factors combine:
-//   1. Height: higher crests are thinner (more transmission)
-//   2. View-light alignment: strongest when looking toward the light
-//      through the wave
-//   3. Surface facing: strongest on the back face of the crest
-//      (normal pointing away from camera)
-//
-// Feed the output into a Lerp on emissive color:
-//   Emissive = Lerp(0, SSSColor, SSSMask * SSSIntensity)
-//
-// SSSColor should be a deep teal/turquoise (e.g. 0.1, 0.45, 0.35).
-// ===================================================================
-
-float ComputeSubsurfaceMask(
-    float WaveHeight,
-    float MaxAmplitude,
-    float3 WorldNormal,
-    float3 ViewDir,
-    float3 LightDir)
-{
-    float HeightFactor = saturate(WaveHeight / max(MaxAmplitude, 0.01));
-    float ViewLightDot = pow(saturate(dot(-ViewDir, LightDir)), 3.0);
-    float FacingAway = 1.0 - saturate(dot(WorldNormal, ViewDir));
-
-    return HeightFactor * ViewLightDot * FacingAway;
-}
-
-// ===================================================================
-// Multi-source foam
-// ===================================================================
-//
-// The Jacobian fold mask catches wave-folding foam (whitecaps) but
-// misses two other real-world foam sources:
-//
-//   1. Height foam: the highest wave peaks foam even without folding
-//      — wind tears spray off the top.
-//   2. Slope foam: steep slopes indicate turbulence even before the
-//      wave fully folds.
-//
-// Combine this with the Jacobian foam mask using max or additive
-// blending for a richer foam pattern.
-//
-// Material wiring:
-//   FinalFoam = saturate(JacobianFoam + BreakingFoam * BreakingIntensity)
-// ===================================================================
-
-float ComputeBreakingFoam(
-    float WaveHeight,
-    float MaxAmplitude,
-    float3 WorldNormal,
-    float HeightThreshold,
-    float SlopeThreshold)
-{
-    float HeightFoam = saturate(
-        (WaveHeight / max(MaxAmplitude, 0.01) - HeightThreshold)
-        / (1.0 - HeightThreshold));
-
-    float SlopeAngle = 1.0 - WorldNormal.z;
-    float SlopeFoam = saturate(
-        (SlopeAngle - SlopeThreshold)
-        / (1.0 - SlopeThreshold));
-
-    return max(HeightFoam, SlopeFoam);
-}
-
-// ===================================================================
-// Displacement clamping — prevent self-intersection
-// ===================================================================
-//
-// When total horizontal displacement exceeds a safe ratio of the
-// shortest wavelength, triangles can fold over each other and cause
-// flickering Z-fight artifacts. This clamps the horizontal component
-// while preserving its direction.
-//
-// Apply as a post-process after the displacement loop:
-//   Displacement = ClampHorizontalDisplacement(Displacement, MaxHorizontal);
-//
-// MaxHorizontal: safe limit in world units. Start with the shortest
-// wavelength in your config divided by 4 (e.g. 200cm wavelength →
-// MaxHorizontal = 50). Lower values are safer but reduce choppiness.
-// ===================================================================
-
-float3 ClampHorizontalDisplacement(float3 Displacement, float MaxHorizontal)
-{
-    float2 Horiz = Displacement.xy;
-    float HorizLen = length(Horiz);
-
-    if (HorizLen > MaxHorizontal)
-    {
-        Horiz = Horiz * (MaxHorizontal / HorizLen);
-    }
-
-    return float3(Horiz, Displacement.z);
-}
-
-// ===================================================================
-// Visual displacement — choppiness, crest sharpening, clamping
-// ===================================================================
-//
-// Wraps the core Gerstner loop with cosmetic effects that only
-// matter for rendering. The base displacement math is identical to
-// EvaluateGerstnerDisplacementFromTexture (and thus to the CPU
-// evaluator). The additions are:
-//
-//   - Wavelength-dependent choppiness (SmallWaveChop)
-//   - Crest sharpening via power-curved sine (CrestSharpness)
-//   - Horizontal displacement clamping (MaxHorizontal)
-//
-// None of these affect CPU evaluation. Buoyancy sees the unmodified
-// Gerstner displacement; the GPU sees the shaped version.
-// ===================================================================
-
-void EvaluateGerstnerDisplacementVisual(
-    float3 WorldPos,
-    float Time,
-    int WaveCount,
-    Texture2D WaveData,
-    float Choppiness,
-    float SmallWaveChop,
-    float CrestSharpness,
-    float MaxHorizontal,
-    out float3 Displacement)
-{
-    float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
-
-    int Count = clamp(WaveCount, 0, 16);
-    float MaxWL = WaveData.Load(int3(0, 0, 0)).g;
-
-    [loop]
-    for (int i = 0; i < Count; i++)
-    {
-        float4 wave = WaveData.Load(int3(i, 0, 0));
-        float4 dir = WaveData.Load(int3(i, 1, 0));
-
-        float A = wave.r;
-        float WL = max(wave.g, 0.01f);
-        float Q = wave.b;
-        float Spd = wave.a;
-        float2 D = dir.rg;
-        float Phase = dir.b;
-
-        float k = GERSTNER_TWO_PI / WL;
-        float theta = k * dot(D, WorldPos.xy) - k * Spd * Time + Phase;
-
-        float sinTheta, cosTheta;
-        sincos(theta, sinTheta, cosTheta);
-
-        // Wavelength-dependent choppiness
-        float t = 1.0f - saturate(WL / max(MaxWL, 1.0f));
-        float Chop = Choppiness * lerp(1.0f, SmallWaveChop, t * t);
-
-        TotalDisp.x += Chop * Q * A * D.x * cosTheta;
-        TotalDisp.y += Chop * Q * A * D.y * cosTheta;
-        TotalDisp.z += A * SharpenSine(sinTheta, CrestSharpness);
-    }
-
-    Displacement = ClampHorizontalDisplacement(TotalDisp, MaxHorizontal);
-}
-
-// Derivative of SharpenSine with respect to theta.
-// Used in the normal calculation to match sharpened displacement.
-float SharpenSineDerivative(float SinValue, float CosValue, float Sharpness)
-{
-    float Mapped = SinValue * 0.5 + 0.5;
-    return Sharpness * pow(max(Mapped, 0.001), Sharpness - 1.0) * CosValue;
-}
-
-void EvaluateGerstnerNormalVisual(
-    float3 DisplacedWorldPos,
-    float Time,
-    int WaveCount,
-    Texture2D WaveData,
-    float CrestSharpness,
-    out float3 Normal,
-    out float FoamMask)
-{
-    float NormX = 0.0f;
-    float NormY = 0.0f;
-    float NormZ = 1.0f;
-    float JacobianSum = 0.0f;
-
-    int Count = clamp(WaveCount, 0, 16);
-
-    [loop]
-    for (int i = 0; i < Count; i++)
-    {
-        float4 wave = WaveData.Load(int3(i, 0, 0));
-        float4 dir = WaveData.Load(int3(i, 1, 0));
-
-        float A = wave.r;
-        float WL = max(wave.g, 0.01f);
-        float Q = wave.b;
-        float Spd = wave.a;
-        float2 D = dir.rg;
-        float Phase = dir.b;
-
-        float k = GERSTNER_TWO_PI / WL;
-        float theta = k * dot(D, DisplacedWorldPos.xy) - k * Spd * Time + Phase;
-
-        float sinTheta, cosTheta;
-        sincos(theta, sinTheta, cosTheta);
-
-        float kA = k * A;
-
-        // Sharpened derivative replaces cosTheta in the Z normal term
-        float SharpDeriv = SharpenSineDerivative(sinTheta, cosTheta, CrestSharpness);
-
-        // XY normal terms use standard cosTheta (horizontal displacement unchanged)
-        NormX -= D.x * kA * cosTheta;
-        NormY -= D.y * kA * cosTheta;
-
-        // Z normal term uses the sharpened derivative
-        NormZ -= Q * kA * SharpDeriv;
-
-        JacobianSum += Q * kA * cosTheta;
-    }
-
-    Normal = normalize(float3(NormX, NormY, NormZ));
-    FoamMask = saturate(JacobianSum);
 }
 
 #endif // GERSTNER_WAVE_USH
