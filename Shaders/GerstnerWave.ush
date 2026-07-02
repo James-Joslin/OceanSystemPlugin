@@ -595,39 +595,56 @@ float ComputeBreakingFoam(
     float NormHeight = WaveHeight / max(MaxAmp, 0.01f);
 
     // --- Height foam ---
-    float HeightFoam = saturate(
+    float HeightFactor = saturate(
         (NormHeight - HeightThresh) / max(1.0f - HeightThresh, 0.001f));
-    HeightFoam = pow(HeightFoam, 1.0f / max(HeightSharpness, 0.1f));
+    float HeightFoam = pow(HeightFactor, 1.0f / max(HeightSharpness, 0.1f));
 
-    // --- Slope foam ---
+    // --- Slope foam, gated by height ---
+    // Only fires on steep faces that are ALSO high on the wave.
+    // This prevents foam on every small slope in the troughs.
     float SlopeAngle = 1.0f - WorldNormal.z;
     float SlopeFoam = saturate(
         (SlopeAngle - SlopeThresh) / max(1.0f - SlopeThresh, 0.001f));
     SlopeFoam = pow(SlopeFoam, 1.0f / max(SlopeSharpness, 0.1f));
+    SlopeFoam *= HeightFactor;
 
-    float RawFoam = max(HeightFoam, SlopeFoam);
+    float RawFoam = saturate(HeightFoam + SlopeFoam);
 
-    // --- Noise erosion ---
+    // --- Noise erosion with domain warping ---
     float2 NoiseUV = WorldPos.xy / max(FoamNoiseScale, 1.0f);
     float2 Drift = float2(
         Time * FoamNoiseSpeed,
         Time * FoamNoiseSpeed * 0.7f);
 
-    float Noise = OceanFoamNoise2D(NoiseUV + Drift);
+    // Domain warp the noise coordinates for organic swirl
+    float WarpX = OceanValueNoise2D(NoiseUV * 0.5f + float2(3.7f, 1.4f) + Drift * 0.3f);
+    float WarpY = OceanValueNoise2D(NoiseUV * 0.5f + float2(8.1f, 2.9f) + Drift * 0.3f);
+    float2 WarpedUV = NoiseUV + float2(WarpX, WarpY) * 0.8f;
 
-    // Erode: foam survives where noise + foam exceeds the erosion threshold.
-    // smoothstep gives soft wispy edges rather than a hard cutoff.
+    // Three octaves at irrational ratios
+    float n1 = OceanValueNoise2D(WarpedUV + Drift);
+    float n2 = OceanValueNoise2D(WarpedUV * 2.7f + Drift * 1.3f + float2(5.2f, 1.3f));
+    float n3 = OceanValueNoise2D(WarpedUV * 7.1f + Drift * 0.8f + float2(13.5f, 7.2f));
+    float DetailNoise = n1 * 0.5f + n2 * 0.3f + n3 * 0.2f;
+
+    // Large-scale variation — broad patches where foam is heavier/lighter.
+    // Prevents the foam pattern from looking the same everywhere.
+    float LargeScale = OceanValueNoise2D(
+        WorldPos.xy / max(FoamNoiseScale * 6.0f, 1.0f) + Drift * 0.15f);
+    LargeScale = lerp(0.4f, 1.0f, LargeScale);
+
+    // Erode with soft edges
     float Eroded = smoothstep(
         FoamNoiseErosion,
         FoamNoiseErosion + 0.3f,
-        Noise + RawFoam);
+        DetailNoise + RawFoam * 0.5f);
 
     float FinalFoam = lerp(
         RawFoam,
         RawFoam * Eroded,
         saturate(FoamNoiseErosion * 2.0f));
 
-    return FinalFoam * BreakingIntensity;
+    return FinalFoam * LargeScale * BreakingIntensity;
 }
 
 
