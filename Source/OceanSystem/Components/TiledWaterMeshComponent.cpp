@@ -6,6 +6,11 @@
 #include "GameFramework/Pawn.h"
 #include "Engine/World.h"
 
+#if WITH_EDITOR
+#include "Editor.h"
+#include "EditorViewportClient.h"
+#endif
+
 // ===================================================================
 // Constructor
 // ===================================================================
@@ -49,25 +54,53 @@ void UTiledWaterMeshComponent::TickComponent(
 		return;
 	}
 
-	const APlayerController* PC = World->GetFirstPlayerController();
-	if (!PC)
-	{
-		return;
-	}
+	// Determine LOD centre: in-game uses the possessed pawn (so camera
+	// orbit doesn't inflate LOD), in-editor uses the active perspective
+	// viewport camera so LODs update as you fly around the level.
+	FVector LODCenter = FVector::ZeroVector;
+	bool bHasCenter = false;
 
-	// LOD distance from the possessed pawn, not the camera.
-	// The player may orbit the camera far from the character;
-	// LOD should reflect where the character actually is.
-	// Falls back to camera if no pawn is possessed (spectator, etc.).
-	FVector LODCenter;
-	if (const APawn* Pawn = PC->GetPawn())
+	if (World->IsGameWorld())
 	{
-		LODCenter = Pawn->GetActorLocation();
+		// Runtime / PIE: pawn location, fallback to camera
+		const APlayerController* PC = World->GetFirstPlayerController();
+		if (PC)
+		{
+			if (const APawn* Pawn = PC->GetPawn())
+			{
+				LODCenter = Pawn->GetActorLocation();
+				bHasCenter = true;
+			}
+			else
+			{
+				FRotator CamRot;
+				PC->GetPlayerViewPoint(LODCenter, CamRot);
+				bHasCenter = true;
+			}
+		}
 	}
+#if WITH_EDITOR
 	else
 	{
-		FRotator CamRot;
-		PC->GetPlayerViewPoint(LODCenter, CamRot);
+		// Editor (non-PIE): use the active perspective viewport camera
+		if (GEditor)
+		{
+			for (FEditorViewportClient* VC : GEditor->GetAllViewportClients())
+			{
+				if (VC && VC->IsPerspective())
+				{
+					LODCenter = VC->GetViewLocation();
+					bHasCenter = true;
+					break;
+				}
+			}
+		}
+	}
+#endif
+
+	if (!bHasCenter)
+	{
+		return;
 	}
 
 	const int32 NumLODs = GetNumLODLevels();

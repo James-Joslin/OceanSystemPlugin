@@ -32,6 +32,9 @@ public:
 protected:
 	virtual void BeginPlay() override;
 
+	/** Tick in editor so tile LODs respond to the editor viewport camera. */
+	virtual bool ShouldTickIfViewportsOnly() const override { return true; }
+
 #if WITH_EDITOR
 	virtual void OnConstruction(const FTransform& Transform) override;
 #endif

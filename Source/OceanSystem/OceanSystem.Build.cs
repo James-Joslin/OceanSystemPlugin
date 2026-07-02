@@ -21,5 +21,11 @@ public class OceanSystem : ModuleRules
             "RHI",
             "Projects"       // IPluginManager for shader source mapping
 		});
+
+        // Editor-only: viewport camera access for in-editor LOD
+        if (Target.bBuildEditor)
+        {
+            PrivateDependencyModuleNames.Add("UnrealEd");
+        }
     }
 }
