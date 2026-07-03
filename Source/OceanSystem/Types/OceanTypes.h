@@ -294,4 +294,17 @@ struct FWaterBodyEntry
 
 	/** Active blend zones involving this body. */
 	TArray<FBlendZoneEntry> BlendZones;
+
+	// -------------------------------------------------------------------
+	// Visual parameters (GPU-only effects replicated on CPU for parity)
+	// -------------------------------------------------------------------
+
+	/** Domain warp frequency — bends straight crests into organic curves. */
+	float DomainWarpFrequency = 0.00035f;
+
+	/** Domain warp displacement amount in world units. */
+	float DomainWarpAmount = 400.0f;
+
+	/** Crest sharpness — asymmetric crest/trough shaping. 1.0 = standard sine. */
+	float CrestSharpness = 1.5f;
 };
