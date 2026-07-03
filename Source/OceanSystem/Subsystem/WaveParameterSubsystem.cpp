@@ -579,22 +579,41 @@ FGerstnerResult UWaveParameterSubsystem::EvaluateBody(
 	case EOceanBodyType::Ocean:
 	case EOceanBodyType::Lake:
 		return bFullEval
-			? FGerstnerEvaluator::Evaluate(WorldPos, WorldTime, Entry.BaseZ, Entry.WaveConfig)
-			: FGerstnerEvaluator::EvaluatePhysics(WorldPos, WorldTime, Entry.BaseZ, Entry.WaveConfig);
+			? FGerstnerEvaluator::EvaluateVisual(WorldPos, WorldTime, Entry.BaseZ,
+				Entry.WaveConfig, Entry.DomainWarpFrequency,
+				Entry.DomainWarpAmount, Entry.CrestSharpness)
+			: FGerstnerEvaluator::EvaluatePhysicsVisual(WorldPos, WorldTime, Entry.BaseZ,
+				Entry.WaveConfig, Entry.DomainWarpFrequency,
+				Entry.DomainWarpAmount, Entry.CrestSharpness);
 
 	case EOceanBodyType::River:
 	{
 		const USplineComponent* Spline = Entry.SplineData.Get();
 		if (Spline)
 		{
+			// River: domain warp the position, then evaluate along spline.
+			// CrestSharpness applied via the internal loop.
+			const float ScaledTime = WorldTime * Entry.WaveConfig.TimeScale;
+			const FVector WarpedPos = (Entry.DomainWarpAmount > UE_KINDA_SMALL_NUMBER)
+				? FGerstnerEvaluator::DomainWarpPosition(
+					WorldPos, ScaledTime,
+					Entry.DomainWarpFrequency, Entry.DomainWarpAmount)
+				: WorldPos;
+
+			// Spline evaluators don't have a visual variant yet —
+			// use standard eval at the warped position.
 			return bFullEval
-				? FGerstnerEvaluator::EvaluateAlongSpline(WorldPos, WorldTime, Spline, Entry.WaveConfig)
-				: FGerstnerEvaluator::EvaluatePhysicsAlongSpline(WorldPos, WorldTime, Spline, Entry.WaveConfig);
+				? FGerstnerEvaluator::EvaluateAlongSpline(WarpedPos, WorldTime, Spline, Entry.WaveConfig)
+				: FGerstnerEvaluator::EvaluatePhysicsAlongSpline(WarpedPos, WorldTime, Spline, Entry.WaveConfig);
 		}
-		// Fallback: flat eval at BaseZ
+		// Fallback: flat visual eval at BaseZ
 		return bFullEval
-			? FGerstnerEvaluator::Evaluate(WorldPos, WorldTime, Entry.BaseZ, Entry.WaveConfig)
-			: FGerstnerEvaluator::EvaluatePhysics(WorldPos, WorldTime, Entry.BaseZ, Entry.WaveConfig);
+			? FGerstnerEvaluator::EvaluateVisual(WorldPos, WorldTime, Entry.BaseZ,
+				Entry.WaveConfig, Entry.DomainWarpFrequency,
+				Entry.DomainWarpAmount, Entry.CrestSharpness)
+			: FGerstnerEvaluator::EvaluatePhysicsVisual(WorldPos, WorldTime, Entry.BaseZ,
+				Entry.WaveConfig, Entry.DomainWarpFrequency,
+				Entry.DomainWarpAmount, Entry.CrestSharpness);
 	}
 
 	default:

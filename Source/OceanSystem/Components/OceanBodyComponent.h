@@ -46,6 +46,28 @@ public:
 	float BlendWidth = 200.0f;
 
 	// -------------------------------------------------------------------
+	// Visual Wave Shaping (GPU + CPU parity)
+	// -------------------------------------------------------------------
+
+	/** Bends straight Gerstner crests into organic curves.
+		Lower = broader bends, higher = tighter curvature. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Visual",
+		meta = (ClampMin = "0.0", UIMin = "0.0001", UIMax = "0.001"))
+	float DomainWarpFrequency = 0.00035f;
+
+	/** How far the domain warp displaces positions in world units.
+		0 = no warp (straight crests). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Visual",
+		meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "1000.0"))
+	float DomainWarpAmount = 400.0f;
+
+	/** Asymmetric crest/trough shaping. 1.0 = standard sine (symmetric).
+		1.5+ = peaked crests with broad flat troughs. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Visual",
+		meta = (ClampMin = "0.5", ClampMax = "4.0", UIMin = "1.0", UIMax = "3.0"))
+	float CrestSharpness = 1.5f;
+
+	// -------------------------------------------------------------------
 	// Wave Generator
 	// -------------------------------------------------------------------
 

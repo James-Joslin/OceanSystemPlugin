@@ -168,7 +168,10 @@ void UOceanBodyComponent::PostEditChangeProperty(
 	// --- Structural properties changed — re-register ---
 	if (MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, BodyType)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, Priority)
-		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, Extent))
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, Extent)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, DomainWarpFrequency)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, DomainWarpAmount)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, CrestSharpness))
 	{
 		if (Subsystem)
 		{
@@ -250,6 +253,11 @@ FWaterBodyEntry UOceanBodyComponent::BuildRegistryEntry() const
 	Entry.DetailWaveConfig = DetailWaveConfig;
 	Entry.DetailWaveConfig.bDirty = true;
 	Entry.MaterialInstance = MaterialInstance;
+
+	// Visual params for CPU parity
+	Entry.DomainWarpFrequency = DomainWarpFrequency;
+	Entry.DomainWarpAmount = DomainWarpAmount;
+	Entry.CrestSharpness = CrestSharpness;
 
 	const FVector WorldPos = GetComponentLocation();
 	Entry.BaseZ = WorldPos.Z;
