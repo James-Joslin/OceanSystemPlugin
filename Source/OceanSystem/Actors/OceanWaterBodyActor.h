@@ -29,6 +29,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ocean")
 	void UpdateBoundsFromWaveConfig();
 
+	UFUNCTION(BlueprintCallable, Category = "Ocean")
+	void SyncExtentFromMesh();
+
+	/** Snap the tiled mesh back to the root transform if it has drifted.
+		The rendered surface and the registered physics surface must share
+		a transform — reposition water by moving the actor, not the mesh. */
+	void EnforceMeshTransformLock();
+
 protected:
 	virtual void BeginPlay() override;
 
