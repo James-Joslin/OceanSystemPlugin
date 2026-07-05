@@ -1,19 +1,20 @@
-// Copyright James Joslin. All Rights Reserved.
+ï»¿// Copyright James Joslin. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Components/SceneComponent.h"
+#include "ProceduralMeshComponent.h"
 #include "TiledWaterMeshComponent.generated.h"
 
-class UProceduralMeshComponent;
+
 class UMaterialInterface;
 
 /**
  * Fixed-placement grid of flat tile meshes with camera-distance LOD.
  *
  * Used for lakes and wide river mouths. The component manages a grid of
- * TilesX × TilesY child UProceduralMeshComponents, each pre-generated
+ * TilesX ï¿½ TilesY child UProceduralMeshComponents, each pre-generated
  * with mesh sections at every LOD level. Per-frame, each tile's distance
  * to the camera determines the active LOD section (all others are hidden).
  *
@@ -35,17 +36,17 @@ public:
 	UTiledWaterMeshComponent();
 
 	// -------------------------------------------------------------------
-	// Properties — Grid Layout
+	// Properties ï¿½ Grid Layout
 	// -------------------------------------------------------------------
 
 	/** Number of tile columns (X axis). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TiledMesh|Grid",
-		meta = (ClampMin = "1", ClampMax = "32", UIMin = "1", UIMax = "8"))
+		meta = (ClampMin = "1", ClampMax = "32", UIMin = "1", UIMax = "32"))
 	int32 TilesX = 4;
 
 	/** Number of tile rows (Y axis). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TiledMesh|Grid",
-		meta = (ClampMin = "1", ClampMax = "32", UIMin = "1", UIMax = "8"))
+		meta = (ClampMin = "1", ClampMax = "32", UIMin = "1", UIMax = "32"))
 	int32 TilesY = 4;
 
 	/** World-unit size of each tile edge. */
@@ -54,12 +55,12 @@ public:
 	float TileSize = 500.0f;
 
 	// -------------------------------------------------------------------
-	// Properties — LOD
+	// Properties ï¿½ LOD
 	// -------------------------------------------------------------------
 
 	/** Subdivisions per tile edge at highest LOD (nearest to camera). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TiledMesh|LOD",
-		meta = (ClampMin = "2", ClampMax = "128", UIMin = "16", UIMax = "128"))
+		meta = (ClampMin = "2", ClampMax = "512", UIMin = "16", UIMax = "512"))
 	int32 TileSubdivisions = 64;
 
 	/**
@@ -139,7 +140,8 @@ private:
 		TArray<FVector>& OutVertices,
 		TArray<int32>& OutTriangles,
 		TArray<FVector>& OutNormals,
-		TArray<FVector2D>& OutUVs) const;
+		TArray<FVector2D>& OutUVs,
+		TArray<FProcMeshTangent>& OutTangents) const;
 
 	/** Get the subdivision count for a LOD level index. */
 	int32 GetSubdivisionsForLOD(int32 LODLevel) const;
@@ -157,13 +159,18 @@ private:
 	// Tile Data
 	// -------------------------------------------------------------------
 
-	/** One ProceduralMeshComponent per tile, each with NumLODLevels sections. */
-	UPROPERTY()
+	/** One ProceduralMeshComponent per tile, each with NumLODLevels sections.
+		Transient â€” rebuilt at BeginPlay and OnConstruction, never serialised. */
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<UProceduralMeshComponent>> TileMeshes;
 
 	/** Current active LOD level per tile (parallel with TileMeshes). */
 	TArray<int32> CurrentLODLevels;
 
-	/** Whether tiles have been built at least once. */
+	/** Cached material for reapplication after tile rebuilds. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> CachedMaterial = nullptr;
+
+	/** Whether tiles have been built at least once (transient â€” resets on load). */
 	bool bMeshBuilt = false;
 };

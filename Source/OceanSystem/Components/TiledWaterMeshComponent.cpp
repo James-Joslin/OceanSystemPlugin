@@ -3,7 +3,13 @@
 #include "TiledWaterMeshComponent.h"
 #include "ProceduralMeshComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
 #include "Engine/World.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#include "EditorViewportClient.h"
+#endif
 
 // ===================================================================
 // Constructor
@@ -27,10 +33,8 @@ void UTiledWaterMeshComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (!bMeshBuilt)
-	{
-		BuildTileMesh();
-	}
+	// Always rebuild — tile meshes are transient and won't survive save/load.
+	BuildTileMesh();
 }
 
 void UTiledWaterMeshComponent::TickComponent(
@@ -50,15 +54,54 @@ void UTiledWaterMeshComponent::TickComponent(
 		return;
 	}
 
-	const APlayerController* PC = World->GetFirstPlayerController();
-	if (!PC)
+	// Determine LOD centre: in-game uses the possessed pawn (so camera
+	// orbit doesn't inflate LOD), in-editor uses the active perspective
+	// viewport camera so LODs update as you fly around the level.
+	FVector LODCenter = FVector::ZeroVector;
+	bool bHasCenter = false;
+
+	if (World->IsGameWorld())
+	{
+		// Runtime / PIE: pawn location, fallback to camera
+		const APlayerController* PC = World->GetFirstPlayerController();
+		if (PC)
+		{
+			if (const APawn* Pawn = PC->GetPawn())
+			{
+				LODCenter = Pawn->GetActorLocation();
+				bHasCenter = true;
+			}
+			else
+			{
+				FRotator CamRot;
+				PC->GetPlayerViewPoint(LODCenter, CamRot);
+				bHasCenter = true;
+			}
+		}
+	}
+#if WITH_EDITOR
+	else
+	{
+		// Editor (non-PIE): use the active perspective viewport camera
+		if (GEditor)
+		{
+			for (FEditorViewportClient* VC : GEditor->GetAllViewportClients())
+			{
+				if (VC && VC->IsPerspective())
+				{
+					LODCenter = VC->GetViewLocation();
+					bHasCenter = true;
+					break;
+				}
+			}
+		}
+	}
+#endif
+
+	if (!bHasCenter)
 	{
 		return;
 	}
-
-	FVector CamLoc;
-	FRotator CamRot;
-	PC->GetPlayerViewPoint(CamLoc, CamRot);
 
 	const int32 NumLODs = GetNumLODLevels();
 
@@ -70,8 +113,8 @@ void UTiledWaterMeshComponent::TickComponent(
 			continue;
 		}
 
-		// Distance from camera to tile centre (world space)
-		const float Dist = FVector::Dist(CamLoc, Tile->GetComponentLocation());
+		// Distance from pawn to tile centre (world space)
+		const float Dist = FVector::Dist(LODCenter, Tile->GetComponentLocation());
 		const int32 DesiredLOD = ComputeLODLevel(Dist);
 
 		if (DesiredLOD != CurrentLODLevels[TileIdx])
@@ -152,8 +195,9 @@ void UTiledWaterMeshComponent::BuildTileMesh()
 			const float CentreX = (ix + 0.5f) * TileSize - GridHalfX;
 			const float CentreY = (iy + 0.5f) * TileSize - GridHalfY;
 
-			// Create tile mesh component
-			UProceduralMeshComponent* Tile = NewObject<UProceduralMeshComponent>(Owner);
+			// Create tile mesh component (transient — never serialised)
+			UProceduralMeshComponent* Tile = NewObject<UProceduralMeshComponent>(
+				Owner, NAME_None, RF_Transient);
 			Tile->SetupAttachment(this);
 			Tile->SetRelativeLocation(FVector(CentreX, CentreY, 0.0f));
 			Tile->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -173,7 +217,6 @@ void UTiledWaterMeshComponent::BuildTileMesh()
 
 			// Generate mesh sections — one per LOD level
 			const TArray<FColor> EmptyColors;
-			const TArray<FProcMeshTangent> EmptyTangents;
 
 			for (int32 LOD = 0; LOD < NumLODs; ++LOD)
 			{
@@ -183,11 +226,12 @@ void UTiledWaterMeshComponent::BuildTileMesh()
 				TArray<int32> Triangles;
 				TArray<FVector> Normals;
 				TArray<FVector2D> UVs;
+				TArray<FProcMeshTangent> Tangents;
 
-				GenerateGridMesh(TileSize, Subdivs, Vertices, Triangles, Normals, UVs);
+				GenerateGridMesh(TileSize, Subdivs, Vertices, Triangles, Normals, UVs, Tangents);
 
 				Tile->CreateMeshSection(LOD, Vertices, Triangles, Normals,
-					UVs, EmptyColors, EmptyTangents, /*bCreateCollision=*/false);
+					UVs, EmptyColors, Tangents, /*bCreateCollision=*/false);
 
 				// Only LOD 0 is visible initially
 				Tile->SetMeshSectionVisible(LOD, LOD == 0);
@@ -200,6 +244,14 @@ void UTiledWaterMeshComponent::BuildTileMesh()
 	}
 
 	bMeshBuilt = true;
+
+	// Reapply cached material to new tiles — without this, rebuilt tiles
+	// have no material and WPO/normals stop working until the actor
+	// manually reapplies via SetMaterialOnAllTiles.
+	if (CachedMaterial)
+	{
+		SetMaterialOnAllTiles(CachedMaterial);
+	}
 
 	UE_LOG(LogTemp, Log,
 		TEXT("TiledWaterMesh: Built %d tiles (%dx%d), %d LOD levels, "
@@ -218,6 +270,9 @@ void UTiledWaterMeshComponent::SetMaterialOnAllTiles(UMaterialInterface* Materia
 	{
 		return;
 	}
+
+	// Cache so we can reapply after tile rebuilds
+	CachedMaterial = Material;
 
 	const int32 NumLODs = GetNumLODLevels();
 
@@ -312,7 +367,8 @@ void UTiledWaterMeshComponent::GenerateGridMesh(
 	TArray<FVector>& OutVertices,
 	TArray<int32>& OutTriangles,
 	TArray<FVector>& OutNormals,
-	TArray<FVector2D>& OutUVs) const
+	TArray<FVector2D>& OutUVs,
+	TArray<FProcMeshTangent>& OutTangents) const
 {
 	const int32 N = FMath::Max(2, Subdivisions);
 	const int32 VN = N + 1;
@@ -324,6 +380,10 @@ void UTiledWaterMeshComponent::GenerateGridMesh(
 	OutVertices.Reserve(VertCount);
 	OutNormals.Reserve(VertCount);
 	OutUVs.Reserve(VertCount);
+	OutTangents.Reserve(VertCount);
+
+	// Flat Z-up grid: tangent is always +X, bitangent derived as Normal × Tangent = +Y
+	const FProcMeshTangent FlatTangent(FVector(1.0f, 0.0f, 0.0f), false);
 
 	for (int32 j = 0; j < VN; ++j)
 	{
@@ -334,7 +394,15 @@ void UTiledWaterMeshComponent::GenerateGridMesh(
 
 			OutVertices.Add(FVector(X, Y, 0.0f));
 			OutNormals.Add(FVector::UpVector);
-			OutUVs.Add(FVector2D(X, Y));
+
+			// Normalised UV [0,1] per tile for standard texture sampling.
+			// For seamless cross-tile sampling (ocean normals, foam), use
+			// WorldPosition in the material instead of TexCoord.
+			OutUVs.Add(FVector2D(
+				static_cast<float>(i) / static_cast<float>(N),
+				static_cast<float>(j) / static_cast<float>(N)));
+
+			OutTangents.Add(FlatTangent);
 		}
 	}
 

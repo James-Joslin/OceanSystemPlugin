@@ -54,6 +54,31 @@ class OCEANSYSTEM_API FGerstnerEvaluator
 {
 public:
 	// -------------------------------------------------------------------
+	// Utilities — ported from GerstnerWave.ush for CPU parity
+	// -------------------------------------------------------------------
+
+	/** Domain warp — bends straight crests into organic curves.
+		Apply to WorldPos before evaluation. Three octaves at irrational
+		ratios to prevent visible periodicity. */
+	static FVector DomainWarpPosition(
+		const FVector& WorldPos, float Time,
+		float WarpFrequency, float WarpAmount);
+
+	/** Asymmetric crest shaping. Sharpness=1.0 is unchanged sine.
+		>1 gives peaked crests with broad flat troughs.
+		Output is zero-mean over a full cycle — required so that skipping
+		layers on the physics path never shifts the resting water level. */
+	static float SharpenSine(float SinValue, float Sharpness);
+
+	/** Cycle-average of the uncorrected sharpened sine. Subtracted inside
+		SharpenSine to keep each layer DC-free. Must be mirrored in
+		GerstnerWave.ush (PARITY CONTRACT). */
+	static float SharpenSineMean(float Sharpness);
+
+	/** Derivative of SharpenSine for matching normals. */
+	static float SharpenSineDerivative(float SinValue, float CosValue, float Sharpness);
+
+	// -------------------------------------------------------------------
 	// Flat-surface evaluators (ocean, lake)
 	// -------------------------------------------------------------------
 
@@ -72,6 +97,29 @@ public:
 	static FGerstnerResult EvaluatePhysics(
 		const FVector& WorldPos, float Time,
 		float BaseZ, const FWaveConfig& Config);
+
+	// -------------------------------------------------------------------
+	// Visual evaluators — include domain warp + crest sharpening
+	// -------------------------------------------------------------------
+
+	/**
+	 * Full visual evaluation with domain warp and crest sharpening.
+	 * Matches the GPU EvaluateGerstnerDisplacementVisual output.
+	 * Use for any CPU query that must match the rendered surface.
+	 */
+	static FGerstnerResult EvaluateVisual(
+		const FVector& WorldPos, float Time,
+		float BaseZ, const FWaveConfig& Config,
+		float WarpFrequency, float WarpAmount, float CrestSharpness);
+
+	/**
+	 * Physics-LOD visual evaluation with domain warp and crest sharpening.
+	 * Use for buoyancy so objects float on the visible surface.
+	 */
+	static FGerstnerResult EvaluatePhysicsVisual(
+		const FVector& WorldPos, float Time,
+		float BaseZ, const FWaveConfig& Config,
+		float WarpFrequency, float WarpAmount, float CrestSharpness);
 
 	// -------------------------------------------------------------------
 	// Spline-surface evaluators (river)
@@ -112,21 +160,11 @@ public:
 private:
 	/**
 	 * Core Gerstner loop, parameterised by layer count.
-	 *
-	 * This is the SINGLE implementation of the Gerstner math on the CPU.
-	 * It mirrors GerstnerWave.ush line-for-line. All public methods
-	 * delegate here with the appropriate LayerCount:
-	 *   Full:    Config.GetVisualLayerCount()
-	 *   Physics: Config.GetPhysicsLayerCount()
-	 *
-	 * @param WorldPos   Undisplaced world position (Z-up).
-	 * @param Time       Raw world time in seconds (TimeScale applied internally).
-	 * @param BaseZ      Resting water surface height.
-	 * @param Config     Wave configuration (layers must already be sorted).
-	 * @param LayerCount Number of layers to evaluate.
+	 * Mirrors GerstnerWave.ush EvaluateGerstnerFromTexture line-for-line.
+	 * CrestSharpness = 1.0 gives the standard unmodified Gerstner.
 	 */
 	static FGerstnerResult EvaluateInternal(
 		const FVector& WorldPos, float Time,
 		float BaseZ, const FWaveConfig& Config,
-		int32 LayerCount);
+		int32 LayerCount, float CrestSharpness = 1.0f);
 };

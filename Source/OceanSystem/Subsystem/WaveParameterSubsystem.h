@@ -1,4 +1,4 @@
-// Copyright James Joslin. All Rights Reserved.
+ï»¿// Copyright James Joslin. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "../WaveEval/GerstnerEvaluator.h"
 #include "WaveParameterSubsystem.generated.h"
 
+class UTexture2D;
 class UOceanBodyComponent;
 
 // ---------------------------------------------------------------------------
@@ -44,13 +45,17 @@ struct FWaterBodyQueryResult
  *   1. Water body registry with priority-sorted entries.
  *   2. Blend zone auto-detection on registration.
  *   3. Spatial queries to find which body covers a world position.
- *   4. CPU evaluation dispatch — physics path (buoyancy) and full path
+ *   4. CPU evaluation dispatch ï¿½ physics path (buoyancy) and full path
  *      (spray, PP, debug), including river spline and blend zone variants.
  *   5. Per-frame MID sync: pushes wave parameters and scaled time to each
  *      body's Dynamic Material Instance.
  *   6. Layer sort enforcement on registration and config update.
  *
- * No MPC — everything is per-body via Dynamic Material Instances.
+ * Ticks in editor to drive wave animation on the material via
+ * FApp::GetCurrentTime(). At runtime uses World->GetTimeSeconds()
+ * which respects pause and time dilation.
+ *
+ * No MPC ï¿½ everything is per-body via Dynamic Material Instances.
  */
 UCLASS()
 class OCEANSYSTEM_API UWaveParameterSubsystem : public UTickableWorldSubsystem
@@ -66,7 +71,9 @@ public:
 	virtual void Deinitialize() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
-	virtual bool IsTickableInEditor() const override { return false; }
+
+	/** Tick in editor so wave time drives the material preview. */
+	virtual bool IsTickableInEditor() const override { return true; }
 
 	// -------------------------------------------------------------------
 	// Water Body Registry
@@ -93,6 +100,12 @@ public:
 	void UpdateWaterBodyConfig(const UOceanBodyComponent* Body, const FWaveConfig& NewConfig);
 
 	/**
+	 * Update a body's detail wave config (per-pixel normal layers).
+	 * Re-sorts layers by amplitude and marks the detail config dirty.
+	 */
+	void UpdateDetailWaveConfig(const UOceanBodyComponent* Body, const FWaveConfig& NewDetailConfig);
+
+	/**
 	 * Mark a body dirty so its MID is resynced on the next tick.
 	 */
 	void MarkBodyDirty(const UOceanBodyComponent* Body);
@@ -109,7 +122,7 @@ public:
 	const FWaterBodyEntry* FindWaterBodyAt(const FVector2D& XY) const;
 
 	// -------------------------------------------------------------------
-	// CPU Evaluation — Physics Path (buoyancy)
+	// CPU Evaluation ï¿½ Physics Path (buoyancy)
 	// -------------------------------------------------------------------
 
 	/**
@@ -130,7 +143,7 @@ public:
 	bool GetWaveData(const FVector& WorldPos, FGerstnerResult& OutResult);
 
 	// -------------------------------------------------------------------
-	// CPU Evaluation — Full Path (spray, PP, debug)
+	// CPU Evaluation ï¿½ Full Path (spray, PP, debug)
 	// -------------------------------------------------------------------
 
 	/**
@@ -209,6 +222,20 @@ private:
 	 * (time update only).
 	 */
 	void SyncMaterialInstance(FWaterBodyEntry& Entry, float WorldTime);
+
+	/**
+	* Create a transient 128ï¿½2 RGBA32F texture for wave data.
+	* No disk asset ï¿½ lives in memory only, GC'd when unreferenced.
+	*/
+	UTexture2D* CreateWaveDataTexture() const;
+
+	/**
+	 * Write wave layer data into an existing data texture.
+	 * Row 0: (Amplitude, Wavelength, Steepness, Speed)
+	 * Row 1: (Direction.X, Direction.Y, PhaseOffset, 0)
+	 * Unused slots are zeroed.
+	 */
+	void UpdateWaveDataTexture(UTexture2D* Texture, const FWaveConfig& Config) const;
 
 	// -------------------------------------------------------------------
 	// Data

@@ -1,29 +1,17 @@
-// Copyright James Joslin. All Rights Reserved.
+ï»¿// Copyright James Joslin. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Components/SceneComponent.h"
 #include "../Types/OceanTypes.h"
+#include "WaveGenerator.h"
 #include "OceanBodyComponent.generated.h"
 
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UWaveParameterSubsystem;
 
-/**
- * Core component for a water body. Owns the wave configuration and
- * Dynamic Material Instance for a single ocean, lake, or river.
- *
- * Lifecycle:
- *   BeginPlay  — creates MID from BaseMaterial, builds an FWaterBodyEntry,
- *                registers with WaveParameterSubsystem (auto-blend detection,
- *                layer sorting), and pushes initial wave params.
- *   EndPlay    — unregisters from subsystem.
- *
- * Attach to an actor alongside the appropriate geometry component
- * (ClipmapOceanMesh, TiledWaterMesh, or SplineMeshComponents).
- */
 UCLASS(ClassGroup = (OceanSystem), meta = (BlueprintSpawnableComponent))
 class OCEANSYSTEM_API UOceanBodyComponent : public USceneComponent
 {
@@ -32,66 +20,132 @@ class OCEANSYSTEM_API UOceanBodyComponent : public USceneComponent
 public:
 	UOceanBodyComponent();
 
-	// -------------------------------------------------------------------
-	// Properties
-	// -------------------------------------------------------------------
-
-	/** Water body type — controls geometry strategy and query behaviour. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body")
 	EOceanBodyType BodyType = EOceanBodyType::Ocean;
 
-	/** Wave parameters for this body. Layers are sorted by amplitude on registration. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Waves")
 	FWaveConfig WaveConfig;
 
-	/**
-	 * XY half-extents in world units (ocean/lake only).
-	 * Defines the spatial footprint for queries and blend zone detection.
-	 * Ignored for rivers (spline + half-width is used instead).
-	 */
+	/** Short-wavelength detail layers â€” evaluated per-pixel for normals only.
+		Never displace vertices. Never evaluated on CPU. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Waves|Detail")
+	FWaveConfig DetailWaveConfig;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Bounds",
 		meta = (EditCondition = "BodyType != EOceanBodyType::River"))
 	FVector2D Extent = FVector2D(10000.0, 10000.0);
 
-	/** Overlap resolution priority. Higher wins spatial queries. */
+	/** When true, Extent is automatically synced from a sibling
+		TiledWaterMeshComponent on every registration, so the subsystem
+		query bounds always match the rendered water area exactly.
+		Disable to set Extent manually. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Bounds",
+		meta = (EditCondition = "BodyType != EOceanBodyType::River"))
+	bool bAutoSizeExtentFromMesh = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body")
 	int32 Priority = 0;
 
-	/**
-	 * Base material to create the Dynamic Material Instance from.
-	 * Must contain the Custom node that includes GerstnerWave.ush and
-	 * reads the Wave_N / WaveDir_N vector parameters.
-	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Material")
 	TSoftObjectPtr<UMaterialInterface> BaseMaterial;
 
-	/** Default blend zone width when this body overlaps another. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Blending",
 		meta = (ClampMin = "0.0", UIMin = "50.0", UIMax = "1000.0"))
 	float BlendWidth = 200.0f;
 
 	// -------------------------------------------------------------------
-	// Runtime access
+	// Visual Wave Shaping (GPU + CPU parity)
 	// -------------------------------------------------------------------
 
-	/** The Dynamic Material Instance created at BeginPlay. */
+	/** Bends straight Gerstner crests into organic curves.
+		Lower = broader bends, higher = tighter curvature. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Visual",
+		meta = (ClampMin = "0.0", UIMin = "0.0001", UIMax = "0.001"))
+	float DomainWarpFrequency = 0.00035f;
+
+	/** How far the domain warp displaces positions in world units.
+		0 = no warp (straight crests). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Visual",
+		meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "1000.0"))
+	float DomainWarpAmount = 400.0f;
+
+	/** Asymmetric crest/trough shaping. 1.0 = standard sine (symmetric).
+		1.5+ = peaked crests with broad flat troughs. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Visual",
+		meta = (ClampMin = "0.5", ClampMax = "4.0", UIMin = "1.0", UIMax = "3.0"))
+	float CrestSharpness = 1.5f;
+
+	// -------------------------------------------------------------------
+	// Wave Generator
+	// -------------------------------------------------------------------
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Wave Generator")
+	FWaveGeneratorConfig WaveGenerator;
+
+	/** Generator for per-pixel detail normal layers.
+		Short wavelengths, higher steepness â€” never displace geometry. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Wave Generator|Detail")
+	FWaveGeneratorConfig DetailWaveGenerator;
+
+	/** Regenerate both main and detail wave configs from their generators. */
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Water Body|Wave Generator")
+	void GenerateWavesFromConfig();
+
+	// -------------------------------------------------------------------
+	// Debug Visualisation
+	// -------------------------------------------------------------------
+
+	/** Draw a wireframe box showing the subsystem query bounds and BaseZ.
+		Works in both editor viewport and PIE. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Debug")
+	bool bShowDebugBounds = false;
+
+	// -------------------------------------------------------------------
+	// Initialisation
+	// -------------------------------------------------------------------
+
+	/**
+	 * Create MID (if needed) and register with the wave subsystem.
+	 * Called from the owning actor's OnConstruction (editor preview)
+	 * and from BeginPlay (runtime). Safe to call multiple times ï¿½
+	 * skips MID recreation if the parent material hasn't changed.
+	 */
+	void InitializeWaterBody();
+
+	// -------------------------------------------------------------------
+	// Runtime
+	// -------------------------------------------------------------------
+
 	UFUNCTION(BlueprintCallable, Category = "Water Body")
 	UMaterialInstanceDynamic* GetMaterialInstance() const { return MaterialInstance; }
 
-	/**
-	 * Update the wave config at runtime. Sorts layers by amplitude,
-	 * marks the body dirty for MID resync, and notifies the subsystem.
-	 */
 	UFUNCTION(BlueprintCallable, Category = "Water Body|Waves")
 	void SetWaveConfig(const FWaveConfig& NewConfig);
+
+	/** Update the detail wave config at runtime. Pushes to the subsystem MID. */
+	UFUNCTION(BlueprintCallable, Category = "Water Body|Waves")
+	void SetDetailWaveConfig(const FWaveConfig& NewConfig);
 
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
+		FActorComponentTickFunction* ThisTickFunction) override;
+
+	/** Re-register with the subsystem when this component's world Z
+		changes, so the physics water level always tracks placement. */
+	virtual void OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags,
+		ETeleportType Teleport = ETeleportType::None) override;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 private:
-	/** Build an FWaterBodyEntry from current properties for subsystem registration. */
 	FWaterBodyEntry BuildRegistryEntry() const;
+
+	/** World Z at last registration. Sentinel forces first registration. */
+	float LastRegisteredZ = TNumericLimits<float>::Lowest();
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> MaterialInstance = nullptr;

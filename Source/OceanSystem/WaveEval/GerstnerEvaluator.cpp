@@ -4,6 +4,66 @@
 #include "Components/SplineComponent.h"
 
 // ---------------------------------------------------------------------------
+// Utilities — ported from GerstnerWave.ush
+// ---------------------------------------------------------------------------
+
+FVector FGerstnerEvaluator::DomainWarpPosition(
+	const FVector& WorldPos, float Time,
+	float WarpFrequency, float WarpAmount)
+{
+	const float WPX = WorldPos.X * WarpFrequency;
+	const float WPY = WorldPos.Y * WarpFrequency;
+
+	const float WX = FMath::Sin(WPY * 1.0f + Time * 0.05f) * WarpAmount
+		+ FMath::Sin(WPY * 2.3f + WPX * 0.7f + Time * 0.03f) * WarpAmount * 0.5f
+		+ FMath::Sin(WPY * 4.1f + WPX * 1.3f + Time * 0.07f) * WarpAmount * 0.2f;
+
+	const float WY = FMath::Cos(WPX * 1.0f + Time * 0.04f) * WarpAmount
+		+ FMath::Cos(WPX * 1.9f + WPY * 0.6f + Time * 0.06f) * WarpAmount * 0.5f
+		+ FMath::Cos(WPX * 3.7f + WPY * 1.1f + Time * 0.05f) * WarpAmount * 0.2f;
+
+	return FVector(WorldPos.X + WX, WorldPos.Y + WY, WorldPos.Z);
+}
+
+float FGerstnerEvaluator::SharpenSineMean(float Sharpness)
+{
+	// Mean of the *uncorrected* sharpened sine (2*((1+sin)/2)^p - 1) over a
+	// full wave cycle. Exact value is 2*Gamma(p+0.5)/(sqrt(pi)*Gamma(p+1)) - 1;
+	// the closed form below approximates it to within ~0.3% for p in [1, 4]
+	// and contains only ops available in HLSL, so the .ush can mirror it
+	// exactly (PARITY CONTRACT).
+	return 2.0f / FMath::Sqrt(UE_PI * (Sharpness + 0.267f)) - 1.0f;
+}
+
+float FGerstnerEvaluator::SharpenSine(float SinValue, float Sharpness)
+{
+	const float Mapped = SinValue * 0.5f + 0.5f;
+	const float Sharp = FMath::Pow(Mapped, Sharpness);
+
+	// Re-centre so the sharpened wave is ZERO-MEAN over a cycle.
+	//
+	// pow() on the remapped sine narrows the crests and widens the troughs,
+	// which drags the cycle average below zero (-0.151 * Amplitude at p=1.5).
+	// Every sharpened layer therefore contributed a hidden negative DC offset
+	// proportional to its amplitude. Because the physics path evaluates only
+	// PhysicsLayerCount layers while the GPU displaces with ALL layers, the
+	// visible surface carried a much larger negative DC than the CPU query —
+	// so buoyancy queries reported a water level that was permanently ABOVE
+	// the rendered surface by 0.151 * (sum of excluded layer amplitudes).
+	// Subtracting the mean makes each layer DC-free, so skipping layers only
+	// removes oscillation, never shifts the resting water level.
+	return (Sharp * 2.0f - 1.0f) - SharpenSineMean(Sharpness);
+}
+
+float FGerstnerEvaluator::SharpenSineDerivative(float SinValue, float CosValue, float Sharpness)
+{
+	// Unchanged by the zero-mean correction in SharpenSine — the subtracted
+	// mean is constant per layer, so its derivative is zero.
+	const float Mapped = SinValue * 0.5f + 0.5f;
+	return Sharpness * FMath::Pow(FMath::Max(Mapped, 0.001f), Sharpness - 1.0f) * CosValue;
+}
+
+// ---------------------------------------------------------------------------
 // Public — Flat-surface evaluators
 // ---------------------------------------------------------------------------
 
@@ -12,7 +72,7 @@ FGerstnerResult FGerstnerEvaluator::Evaluate(
 	float BaseZ, const FWaveConfig& Config)
 {
 	return EvaluateInternal(WorldPos, Time, BaseZ, Config,
-		Config.GetVisualLayerCount());
+		Config.GetTotalLayerCount());
 }
 
 FGerstnerResult FGerstnerEvaluator::EvaluatePhysics(
@@ -21,6 +81,36 @@ FGerstnerResult FGerstnerEvaluator::EvaluatePhysics(
 {
 	return EvaluateInternal(WorldPos, Time, BaseZ, Config,
 		Config.GetPhysicsLayerCount());
+}
+
+// ---------------------------------------------------------------------------
+// Public — Visual evaluators (domain warp + crest sharpening)
+// ---------------------------------------------------------------------------
+
+FGerstnerResult FGerstnerEvaluator::EvaluateVisual(
+	const FVector& WorldPos, float Time,
+	float BaseZ, const FWaveConfig& Config,
+	float WarpFrequency, float WarpAmount, float CrestSharpness)
+{
+	const FVector WarpedPos = (WarpAmount > UE_KINDA_SMALL_NUMBER)
+		? DomainWarpPosition(WorldPos, Time * Config.TimeScale, WarpFrequency, WarpAmount)
+		: WorldPos;
+
+	return EvaluateInternal(WarpedPos, Time, BaseZ, Config,
+		Config.GetTotalLayerCount(), CrestSharpness);
+}
+
+FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsVisual(
+	const FVector& WorldPos, float Time,
+	float BaseZ, const FWaveConfig& Config,
+	float WarpFrequency, float WarpAmount, float CrestSharpness)
+{
+	const FVector WarpedPos = (WarpAmount > UE_KINDA_SMALL_NUMBER)
+		? DomainWarpPosition(WorldPos, Time * Config.TimeScale, WarpFrequency, WarpAmount)
+		: WorldPos;
+
+	return EvaluateInternal(WarpedPos, Time, BaseZ, Config,
+		Config.GetPhysicsLayerCount(), CrestSharpness);
 }
 
 // ---------------------------------------------------------------------------
@@ -42,7 +132,7 @@ FGerstnerResult FGerstnerEvaluator::EvaluateAlongSpline(
 	const float SplineBaseZ = ClosestPoint.Z;
 
 	return EvaluateInternal(WorldPos, Time, SplineBaseZ, Config,
-		Config.GetVisualLayerCount());
+		Config.GetTotalLayerCount());
 }
 
 FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsAlongSpline(
@@ -116,7 +206,7 @@ FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsBlended(
 FGerstnerResult FGerstnerEvaluator::EvaluateInternal(
 	const FVector& WorldPos, float Time,
 	float BaseZ, const FWaveConfig& Config,
-	int32 LayerCount)
+	int32 LayerCount, float CrestSharpness)
 {
 	FGerstnerResult Result;
 	Result.Displacement = FVector::ZeroVector;
@@ -131,6 +221,9 @@ FGerstnerResult FGerstnerEvaluator::EvaluateInternal(
 
 	// Apply per-body time scale
 	const float ScaledTime = Time * Config.TimeScale;
+
+	// Whether to apply crest sharpening
+	const bool bSharpen = !FMath::IsNearlyEqual(CrestSharpness, 1.0f, 0.01f);
 
 	// Clamp layer count to what's actually available
 	const int32 Count = FMath::Clamp(LayerCount, 0, Config.Layers.Num());
@@ -159,12 +252,28 @@ FGerstnerResult FGerstnerEvaluator::EvaluateInternal(
 		// ----- Displacement -----
 		Result.Displacement.X += Q * A * Layer.Direction.X * CosTheta;
 		Result.Displacement.Y += Q * A * Layer.Direction.Y * CosTheta;
-		Result.Displacement.Z += A * SinTheta;
+
+		if (bSharpen)
+		{
+			Result.Displacement.Z += A * SharpenSine(SinTheta, CrestSharpness);
+		}
+		else
+		{
+			Result.Displacement.Z += A * SinTheta;
+		}
 
 		// ----- Normal accumulation -----
 		NormX -= Layer.Direction.X * kA * CosTheta;
 		NormY -= Layer.Direction.Y * kA * CosTheta;
-		NormZ -= Q * kA * SinTheta;
+
+		if (bSharpen)
+		{
+			NormZ -= Q * kA * SharpenSineDerivative(SinTheta, CosTheta, CrestSharpness);
+		}
+		else
+		{
+			NormZ -= Q * kA * SinTheta;
+		}
 
 		// ----- Fold detection (Jacobian) -----
 		JacobianSum += Q * kA * CosTheta;

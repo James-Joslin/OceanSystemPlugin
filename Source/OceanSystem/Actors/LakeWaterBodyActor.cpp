@@ -5,75 +5,106 @@
 #include "../Components/TiledWaterMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
-// ===================================================================
-// Constructor
-// ===================================================================
-
 ALakeWaterBodyActor::ALakeWaterBodyActor()
 {
 	PrimaryActorTick.bCanEverTick = false;
 
-	// --- OceanBody (root) ---
 	OceanBody = CreateDefaultSubobject<UOceanBodyComponent>(TEXT("OceanBody"));
 	RootComponent = OceanBody;
 	OceanBody->BodyType = EOceanBodyType::Lake;
 	OceanBody->Priority = 10;
 
-	// Lakes typically have calmer waves — override the ocean default.
-	// The user can further customise in the Details panel.
-	FWaveConfig LakeConfig;
-	LakeConfig.PhysicsLayerCount = 2;
-	LakeConfig.TimeScale = 1.0f;
+	// --- Wave generator defaults for a calm lake (all spatial values in cm) ---
+	FWaveGeneratorConfig& Gen = OceanBody->WaveGenerator;
+	Gen.NumWaves = 8;
+	Gen.Seed = 42;
+	Gen.Randomness = 0.15f;
+	Gen.MinWavelength = 300.0f;
+	Gen.MaxWavelength = 2500.0f;
+	Gen.WavelengthFalloff = 1.5f;
+	Gen.MinAmplitude = 1.0f;
+	Gen.MaxAmplitude = 40.0f;
+	Gen.AmplitudeFalloff = 2.0f;
+	Gen.LargeWaveSteepness = 0.2f;
+	Gen.SmallWaveSteepness = 0.35f;
+	Gen.SteepnessFalloff = 1.0f;
+	Gen.DominantWindAngle = 45.0f;
+	Gen.DirectionAngularSpread = 90.0f;
+	Gen.GlobalSpeedMultiplier = 0.8f;
+	Gen.NoiseStrength = 0.2f;
+	Gen.NoiseOctaves = 2;
+	Gen.NoiseLacunarity = 2.0f;
+	Gen.NoiseGain = 0.5f;
+	Gen.NoiseWarpStrength = 0.3f;
+	Gen.PhysicsLayerCount = 2;
+	Gen.TimeScale = 1.0f;
 
-	FGerstnerWaveLayer L0;
-	L0.Direction = FVector2D(0.8f, 0.6f).GetSafeNormal();
-	L0.Amplitude = 0.4f;
-	L0.Wavelength = 25.0f;
-	L0.Steepness = 0.3f;
-	L0.Speed = 2.5f;
-	L0.PhaseOffset = 0.0f;
-	LakeConfig.Layers.Add(L0);
+	OceanBody->WaveConfig = Gen.Generate();
 
-	FGerstnerWaveLayer L1;
-	L1.Direction = FVector2D(-0.5f, 0.85f).GetSafeNormal();
-	L1.Amplitude = 0.2f;
-	L1.Wavelength = 12.0f;
-	L1.Steepness = 0.25f;
-	L1.Speed = 1.8f;
-	L1.PhaseOffset = 1.5f;
-	LakeConfig.Layers.Add(L1);
+	// --- Detail wave generator defaults for lake surface chop ---
+	// Gentler than ocean — smaller amplitudes, narrower spread.
+	FWaveGeneratorConfig& Detail = OceanBody->DetailWaveGenerator;
+	Detail.NumWaves = 6;
+	Detail.Seed = 142;      // decorrelate from main
+	Detail.Randomness = 0.2f;
+	Detail.MinWavelength = 40.0f;    // fine ripples
+	Detail.MaxWavelength = 500.0f;
+	Detail.WavelengthFalloff = 1.5f;
+	Detail.MinAmplitude = 0.5f;
+	Detail.MaxAmplitude = 5.0f;
+	Detail.AmplitudeFalloff = 1.5f;
+	Detail.LargeWaveSteepness = 0.25f;
+	Detail.SmallWaveSteepness = 0.45f;
+	Detail.SteepnessFalloff = 1.0f;
+	Detail.DominantWindAngle = 45.0f;    // match main
+	Detail.DirectionAngularSpread = 140.0f;
+	Detail.GlobalSpeedMultiplier = 0.5f;
+	Detail.NoiseStrength = 0.3f;
+	Detail.NoiseOctaves = 2;
+	Detail.NoiseLacunarity = 2.0f;
+	Detail.NoiseGain = 0.5f;
+	Detail.NoiseWarpStrength = 0.3f;
+	Detail.PhysicsLayerCount = 0;        // never on CPU
+	Detail.TimeScale = 1.0f;
 
-	FGerstnerWaveLayer L2;
-	L2.Direction = FVector2D(0.3f, -0.95f).GetSafeNormal();
-	L2.Amplitude = 0.08f;
-	L2.Wavelength = 5.0f;
-	L2.Steepness = 0.2f;
-	L2.Speed = 1.0f;
-	L2.PhaseOffset = 3.1f;
-	LakeConfig.Layers.Add(L2);
+	OceanBody->DetailWaveConfig = Detail.Generate();
 
-	LakeConfig.SortLayers();
-	OceanBody->WaveConfig = LakeConfig;
-
-	// --- Tiled mesh ---
 	TiledMesh = CreateDefaultSubobject<UTiledWaterMeshComponent>(TEXT("TiledMesh"));
 	TiledMesh->SetupAttachment(OceanBody);
-
-	// Step 16: UnderwaterPP = CreateDefaultSubobject<UUnderwaterPostProcessComponent>(...)
 }
 
 // ===================================================================
-// Lifecycle
+// Transform lock — the tiled mesh always shares the root's transform
+// (see OceanWaterBodyActor for rationale)
 // ===================================================================
+
+void ALakeWaterBodyActor::EnforceMeshTransformLock()
+{
+	if (!TiledMesh)
+	{
+		return;
+	}
+
+	if (!TiledMesh->GetRelativeTransform().Equals(FTransform::Identity, 0.1f))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("LakeWaterBodyActor '%s': TiledMesh had a relative offset "
+				"(%.1f, %.1f, %.1f) — snapped back to the root. Move the actor "
+				"itself to reposition the water."),
+			*GetName(),
+			TiledMesh->GetRelativeLocation().X,
+			TiledMesh->GetRelativeLocation().Y,
+			TiledMesh->GetRelativeLocation().Z);
+
+		TiledMesh->SetRelativeTransform(FTransform::Identity);
+	}
+}
 
 void ALakeWaterBodyActor::BeginPlay()
 {
 	Super::BeginPlay();
-
-	// Components have already had their BeginPlay called:
-	//   OceanBody → MID created, registered with subsystem
-	//   TiledMesh → tile meshes built with all LOD sections
-
+	EnforceMeshTransformLock();
+	SyncExtentFromMesh();
 	RefreshMeshMaterial();
 	UpdateBoundsFromWaveConfig();
 }
@@ -83,8 +114,30 @@ void ALakeWaterBodyActor::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 
-	// Editor preview: apply the base material to tile sections
-	if (OceanBody && TiledMesh)
+	if (!OceanBody || !TiledMesh)
+	{
+		return;
+	}
+
+	EnforceMeshTransformLock();
+	SyncExtentFromMesh();
+
+	// Ensure MID exists and body is registered with subsystem.
+	OceanBody->InitializeWaterBody();
+
+	// Build tiles only on first construction.
+	if (TiledMesh->GetTileCount() == 0)
+	{
+		TiledMesh->BuildTileMesh();
+	}
+
+	// Apply MID to tiles.
+	UMaterialInstanceDynamic* MID = OceanBody->GetMaterialInstance();
+	if (MID)
+	{
+		TiledMesh->SetMaterialOnAllTiles(MID);
+	}
+	else
 	{
 		UMaterialInterface* BaseMat = OceanBody->BaseMaterial.Get();
 		if (BaseMat)
@@ -95,23 +148,15 @@ void ALakeWaterBodyActor::OnConstruction(const FTransform& Transform)
 }
 #endif
 
-// ===================================================================
-// RefreshMeshMaterial
-// ===================================================================
-
 void ALakeWaterBodyActor::RefreshMeshMaterial()
 {
-	if (!OceanBody || !TiledMesh)
-	{
-		return;
-	}
+	if (!OceanBody || !TiledMesh) return;
 
 	UMaterialInstanceDynamic* MID = OceanBody->GetMaterialInstance();
 	if (!MID)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("LakeWaterBodyActor '%s': No MID available — tiles will use default material. "
-				"Ensure BaseMaterial is set on the OceanBody component."),
+			TEXT("LakeWaterBodyActor '%s': No MID — set BaseMaterial on OceanBody."),
 			*GetName());
 		return;
 	}
@@ -119,24 +164,26 @@ void ALakeWaterBodyActor::RefreshMeshMaterial()
 	TiledMesh->SetMaterialOnAllTiles(MID);
 }
 
-// ===================================================================
-// UpdateBoundsFromWaveConfig
-// ===================================================================
-
 void ALakeWaterBodyActor::UpdateBoundsFromWaveConfig()
 {
-	if (!OceanBody || !TiledMesh)
+	if (!OceanBody || !TiledMesh) return;
+
+	float MaxDisp = 0.0f;
+	for (const FGerstnerWaveLayer& Layer : OceanBody->WaveConfig.Layers)
 	{
-		return;
+		MaxDisp += Layer.Amplitude;
 	}
 
-	const FWaveConfig& Config = OceanBody->WaveConfig;
+	TiledMesh->VerticalBoundsExtension = MaxDisp * 1.5f;
+}
 
-	float MaxDisplacement = 0.0f;
-	for (const FGerstnerWaveLayer& Layer : Config.Layers)
-	{
-		MaxDisplacement += Layer.Amplitude;
-	}
+void ALakeWaterBodyActor::SyncExtentFromMesh()
+{
+	if (!OceanBody || !TiledMesh) return;
 
-	TiledMesh->VerticalBoundsExtension = MaxDisplacement * 1.5f;
+	OceanBody->Extent = FVector2D(
+		TiledMesh->TilesX * TiledMesh->TileSize * 0.5,
+		TiledMesh->TilesY * TiledMesh->TileSize * 0.5);
+
+	OceanBody->InitializeWaterBody();
 }

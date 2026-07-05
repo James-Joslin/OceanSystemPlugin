@@ -4,6 +4,8 @@
 #include "Components/SplineComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
+#include "Engine/Texture2D.h"
+#include "Misc/App.h"
 
 DECLARE_STATS_GROUP(TEXT("OceanSystem"), STATGROUP_OceanSystem, STATCAT_Advanced);
 DECLARE_CYCLE_STAT(TEXT("WaveSubsystem Tick"), STAT_WaveSubsystemTick, STATGROUP_OceanSystem);
@@ -16,33 +18,19 @@ DECLARE_CYCLE_STAT(TEXT("WaveSubsystem Eval Full"), STAT_WaveSubsystemEvalFull, 
 
 namespace OceanMID
 {
-	struct FLayerNames
-	{
-		FName Data;   // Wave_N:   (Amp, WL, Steep, Speed)
-		FName Dir;    // WaveDir_N: (Dir.X, Dir.Y, Phase, 0)
-	};
-
 	static const FName WaveCountName(TEXT("WaveCount"));
 	static const FName WaveTimeName(TEXT("WaveTime"));
+	static const FName WaveDataTexName(TEXT("WaveDataTexture"));
 
-	/** Lazily-initialised per-layer parameter names. Built once on first use. */
-	static const TArray<FLayerNames>& GetLayerNames()
-	{
-		static const TArray<FLayerNames> Names = []()
-			{
-				TArray<FLayerNames> Out;
-				Out.Reserve(FWaveConfig::MaxLayers);
-				for (int32 i = 0; i < FWaveConfig::MaxLayers; ++i)
-				{
-					FLayerNames N;
-					N.Data = FName(*FString::Printf(TEXT("Wave_%d"), i));
-					N.Dir = FName(*FString::Printf(TEXT("WaveDir_%d"), i));
-					Out.Add(N);
-				}
-				return Out;
-			}();
-		return Names;
-	}
+	// Detail layers — per-pixel normal evaluation
+	static const FName DetailWaveCountName(TEXT("DetailWaveCount"));
+	static const FName DetailWaveDataTexName(TEXT("DetailWaveDataTexture"));
+
+	// Visual shaping — pushed from the component so the shader always
+	// matches the CPU evaluator (single source of truth for parity)
+	static const FName CrestSharpnessName(TEXT("CrestSharpness"));
+	static const FName DomainWarpFrequencyName(TEXT("DomainWarpFrequency"));
+	static const FName DomainWarpAmountName(TEXT("DomainWarpAmount"));
 }
 
 // ===================================================================
@@ -80,7 +68,11 @@ void UWaveParameterSubsystem::Tick(float DeltaTime)
 		return;
 	}
 
-	const float WorldTime = World->GetTimeSeconds();
+	// In-game: world time (respects pause, dilation).
+	// In editor (outside PIE): wall-clock time so wave preview animates.
+	const float WorldTime = World->IsGameWorld()
+		? World->GetTimeSeconds()
+		: static_cast<float>(FApp::GetCurrentTime());
 
 	for (FWaterBodyEntry& Entry : WaterBodies)
 	{
@@ -105,6 +97,8 @@ void UWaveParameterSubsystem::RegisterWaterBody(const FWaterBodyEntry& Entry)
 	// Enforce amplitude-descending layer sort
 	NewEntry.WaveConfig.SortLayers();
 	NewEntry.WaveConfig.bDirty = true;
+	NewEntry.DetailWaveConfig.SortLayers();
+	NewEntry.DetailWaveConfig.bDirty = true;
 
 	const int32 NewIndex = WaterBodies.Add(MoveTemp(NewEntry));
 
@@ -149,6 +143,21 @@ void UWaveParameterSubsystem::UpdateWaterBodyConfig(
 	Entry.WaveConfig = NewConfig;
 	Entry.WaveConfig.SortLayers();
 	Entry.WaveConfig.bDirty = true;
+}
+
+void UWaveParameterSubsystem::UpdateDetailWaveConfig(
+	const UOceanBodyComponent* Body, const FWaveConfig& NewDetailConfig)
+{
+	const int32 Index = FindEntryIndex(Body);
+	if (Index == INDEX_NONE)
+	{
+		return;
+	}
+
+	FWaterBodyEntry& Entry = WaterBodies[Index];
+	Entry.DetailWaveConfig = NewDetailConfig;
+	Entry.DetailWaveConfig.SortLayers();
+	Entry.DetailWaveConfig.bDirty = true;
 }
 
 void UWaveParameterSubsystem::MarkBodyDirty(const UOceanBodyComponent* Body)
@@ -576,22 +585,41 @@ FGerstnerResult UWaveParameterSubsystem::EvaluateBody(
 	case EOceanBodyType::Ocean:
 	case EOceanBodyType::Lake:
 		return bFullEval
-			? FGerstnerEvaluator::Evaluate(WorldPos, WorldTime, Entry.BaseZ, Entry.WaveConfig)
-			: FGerstnerEvaluator::EvaluatePhysics(WorldPos, WorldTime, Entry.BaseZ, Entry.WaveConfig);
+			? FGerstnerEvaluator::EvaluateVisual(WorldPos, WorldTime, Entry.BaseZ,
+				Entry.WaveConfig, Entry.DomainWarpFrequency,
+				Entry.DomainWarpAmount, Entry.CrestSharpness)
+			: FGerstnerEvaluator::EvaluatePhysicsVisual(WorldPos, WorldTime, Entry.BaseZ,
+				Entry.WaveConfig, Entry.DomainWarpFrequency,
+				Entry.DomainWarpAmount, Entry.CrestSharpness);
 
 	case EOceanBodyType::River:
 	{
 		const USplineComponent* Spline = Entry.SplineData.Get();
 		if (Spline)
 		{
+			// River: domain warp the position, then evaluate along spline.
+			// CrestSharpness applied via the internal loop.
+			const float ScaledTime = WorldTime * Entry.WaveConfig.TimeScale;
+			const FVector WarpedPos = (Entry.DomainWarpAmount > UE_KINDA_SMALL_NUMBER)
+				? FGerstnerEvaluator::DomainWarpPosition(
+					WorldPos, ScaledTime,
+					Entry.DomainWarpFrequency, Entry.DomainWarpAmount)
+				: WorldPos;
+
+			// Spline evaluators don't have a visual variant yet —
+			// use standard eval at the warped position.
 			return bFullEval
-				? FGerstnerEvaluator::EvaluateAlongSpline(WorldPos, WorldTime, Spline, Entry.WaveConfig)
-				: FGerstnerEvaluator::EvaluatePhysicsAlongSpline(WorldPos, WorldTime, Spline, Entry.WaveConfig);
+				? FGerstnerEvaluator::EvaluateAlongSpline(WarpedPos, WorldTime, Spline, Entry.WaveConfig)
+				: FGerstnerEvaluator::EvaluatePhysicsAlongSpline(WarpedPos, WorldTime, Spline, Entry.WaveConfig);
 		}
-		// Fallback: flat eval at BaseZ
+		// Fallback: flat visual eval at BaseZ
 		return bFullEval
-			? FGerstnerEvaluator::Evaluate(WorldPos, WorldTime, Entry.BaseZ, Entry.WaveConfig)
-			: FGerstnerEvaluator::EvaluatePhysics(WorldPos, WorldTime, Entry.BaseZ, Entry.WaveConfig);
+			? FGerstnerEvaluator::EvaluateVisual(WorldPos, WorldTime, Entry.BaseZ,
+				Entry.WaveConfig, Entry.DomainWarpFrequency,
+				Entry.DomainWarpAmount, Entry.CrestSharpness)
+			: FGerstnerEvaluator::EvaluatePhysicsVisual(WorldPos, WorldTime, Entry.BaseZ,
+				Entry.WaveConfig, Entry.DomainWarpFrequency,
+				Entry.DomainWarpAmount, Entry.CrestSharpness);
 	}
 
 	default:
@@ -600,18 +628,25 @@ FGerstnerResult UWaveParameterSubsystem::EvaluateBody(
 }
 
 // ===================================================================
-// Internal — MID Sync
+// Internal — MID Sync (data texture path)
 // ===================================================================
 //
 // Parameter packing:
-//   Scalar  "WaveCount"    — number of active layers (float for MID)
-//   Scalar  "WaveTime"     — world time × TimeScale
-//   Vector  "Wave_N"       — (Amplitude, Wavelength, Steepness, Speed)
-//   Vector  "WaveDir_N"    — (Direction.X, Direction.Y, PhaseOffset, 0)
+//   Scalar  "WaveCount"            — number of active main layers
+//   Scalar  "WaveTime"             — world time × TimeScale
+//   Texture "WaveDataTexture"      — 16×2 RGBA32F main wave data
+//   Scalar  "DetailWaveCount"      — number of active detail layers
+//   Texture "DetailWaveDataTexture" — 16×2 RGBA32F detail wave data
 //
-// The material's Custom node unpacks these into the arrays that
-// GerstnerWave.ush expects. Unused layer slots (N >= WaveCount) are
-// zero from MID defaults — the .ush loop bounds on WaveCount.
+// Main and detail textures are created lazily and updated independently
+// only when their respective config is dirty. Each frame only the time
+// scalar is pushed — no texture upload unless dirty.
+//
+// Texture layout (same for both):
+//   Row 0, Pixel N = (Amplitude, Wavelength, Steepness, Speed)
+//   Row 1, Pixel N = (Direction.X, Direction.Y, PhaseOffset, 0)
+//
+// The .ush reads via Texture2D.Load(int3(N, row, 0)).
 // ===================================================================
 
 void UWaveParameterSubsystem::SyncMaterialInstance(FWaterBodyEntry& Entry, float WorldTime)
@@ -627,39 +662,142 @@ void UWaveParameterSubsystem::SyncMaterialInstance(FWaterBodyEntry& Entry, float
 		OceanMID::WaveTimeName,
 		WorldTime * Entry.WaveConfig.TimeScale);
 
-	// Full parameter sync only when dirty
-	if (!Entry.WaveConfig.bDirty)
+	const bool bMainDirty = Entry.WaveConfig.bDirty;
+	const bool bDetailDirty = Entry.DetailWaveConfig.bDirty;
+
+	// Nothing to sync if neither config changed
+	if (!bMainDirty && !bDetailDirty)
 	{
 		return;
 	}
 
-	const FWaveConfig& Config = Entry.WaveConfig;
-	const int32 LayerCount = Config.GetVisualLayerCount();
-	const TArray<OceanMID::FLayerNames>& Names = OceanMID::GetLayerNames();
-
-	MID->SetScalarParameterValue(OceanMID::WaveCountName, static_cast<float>(LayerCount));
-
-	for (int32 i = 0; i < FWaveConfig::MaxLayers; ++i)
+	// ---- Main wave data texture ----
+	if (bMainDirty)
 	{
-		if (i < LayerCount)
+		if (!Entry.WaveDataTexture.IsValid())
 		{
-			const FGerstnerWaveLayer& Layer = Config.Layers[i];
+			Entry.WaveDataTexture = CreateWaveDataTexture();
+		}
 
-			MID->SetVectorParameterValue(
-				Names[i].Data,
-				FLinearColor(Layer.Amplitude, Layer.Wavelength, Layer.Steepness, Layer.Speed));
+		UTexture2D* Tex = Entry.WaveDataTexture.Get();
+		if (Tex)
+		{
+			UpdateWaveDataTexture(Tex, Entry.WaveConfig);
 
-			MID->SetVectorParameterValue(
-				Names[i].Dir,
-				FLinearColor(Layer.Direction.X, Layer.Direction.Y, Layer.PhaseOffset, 0.0f));
+			const int32 LayerCount = Entry.WaveConfig.Layers.Num();
+			MID->SetScalarParameterValue(OceanMID::WaveCountName, static_cast<float>(LayerCount));
+			MID->SetTextureParameterValue(OceanMID::WaveDataTexName, Tex);
+		}
+
+		// Push visual shaping so the shader can never drift from the CPU
+		// evaluator. The material must expose these as scalar parameters
+		// and feed them into the custom node — do NOT hardcode values in
+		// the material graph. (Editing CrestSharpness on the component
+		// previously only changed the CPU side; the rendered surface kept
+		// its own value, producing a permanent height offset.)
+		MID->SetScalarParameterValue(OceanMID::CrestSharpnessName, Entry.CrestSharpness);
+		MID->SetScalarParameterValue(OceanMID::DomainWarpFrequencyName, Entry.DomainWarpFrequency);
+		MID->SetScalarParameterValue(OceanMID::DomainWarpAmountName, Entry.DomainWarpAmount);
+
+		Entry.WaveConfig.bDirty = false;
+	}
+
+	// ---- Detail wave data texture ----
+	if (bDetailDirty)
+	{
+		if (Entry.DetailWaveConfig.Layers.Num() > 0)
+		{
+			if (!Entry.DetailWaveDataTexture.IsValid())
+			{
+				Entry.DetailWaveDataTexture = CreateWaveDataTexture();
+			}
+
+			UTexture2D* DetailTex = Entry.DetailWaveDataTexture.Get();
+			if (DetailTex)
+			{
+				UpdateWaveDataTexture(DetailTex, Entry.DetailWaveConfig);
+
+				const int32 DetailCount = Entry.DetailWaveConfig.Layers.Num();
+				MID->SetScalarParameterValue(OceanMID::DetailWaveCountName, static_cast<float>(DetailCount));
+				MID->SetTextureParameterValue(OceanMID::DetailWaveDataTexName, DetailTex);
+			}
 		}
 		else
 		{
-			// Zero out unused slots to prevent stale data from prior configs
-			MID->SetVectorParameterValue(Names[i].Data, FLinearColor::Black);
-			MID->SetVectorParameterValue(Names[i].Dir, FLinearColor::Black);
+			// No detail layers — zero the count so the shader skips the loop
+			MID->SetScalarParameterValue(OceanMID::DetailWaveCountName, 0.0f);
 		}
+
+		Entry.DetailWaveConfig.bDirty = false;
+	}
+}
+
+// ===================================================================
+// Internal — Wave Data Texture
+// ===================================================================
+
+UTexture2D* UWaveParameterSubsystem::CreateWaveDataTexture() const
+{
+	constexpr int32 Width = FWaveConfig::MaxLayers;   // 16
+	constexpr int32 Height = 2;
+
+	UTexture2D* Tex = UTexture2D::CreateTransient(Width, Height, PF_A32B32G32R32F);
+	if (!Tex)
+	{
+		UE_LOG(LogTemp, Error, TEXT("WaveParameterSubsystem: Failed to create wave data texture."));
+		return nullptr;
 	}
 
-	Entry.WaveConfig.bDirty = false;
+	Tex->Filter = TF_Nearest;
+	Tex->SRGB = 0;
+	Tex->CompressionSettings = TC_HDR;
+	Tex->MipGenSettings = TMGS_NoMipmaps;
+	Tex->AddressX = TA_Clamp;
+	Tex->AddressY = TA_Clamp;
+	Tex->NeverStream = true;
+
+	// Allocate and zero the pixel buffer
+	FTexture2DMipMap& Mip = Tex->GetPlatformData()->Mips[0];
+	Mip.BulkData.Lock(LOCK_READ_WRITE);
+	void* Pixels = Mip.BulkData.Realloc(Width * Height * sizeof(FLinearColor));
+	FMemory::Memzero(Pixels, Width * Height * sizeof(FLinearColor));
+	Mip.BulkData.Unlock();
+	Tex->UpdateResource();
+
+	return Tex;
+}
+
+void UWaveParameterSubsystem::UpdateWaveDataTexture(
+	UTexture2D* Texture, const FWaveConfig& Config) const
+{
+	if (!Texture || !Texture->GetPlatformData() || Texture->GetPlatformData()->Mips.Num() == 0)
+	{
+		return;
+	}
+
+	const int32 Width = Texture->GetSizeX();
+	const int32 LayerCount = FMath::Min(Config.Layers.Num(), Width);
+
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	void* RawData = Mip.BulkData.Lock(LOCK_READ_WRITE);
+	FLinearColor* Pixels = static_cast<FLinearColor*>(RawData);
+
+	// Row 0: (Amplitude, Wavelength, Steepness, Speed)
+	// Row 1: (Direction.X, Direction.Y, PhaseOffset, 0)
+	for (int32 i = 0; i < LayerCount; ++i)
+	{
+		const FGerstnerWaveLayer& L = Config.Layers[i];
+		Pixels[i] = FLinearColor(L.Amplitude, L.Wavelength, L.Steepness, L.Speed);
+		Pixels[Width + i] = FLinearColor(L.Direction.X, L.Direction.Y, L.PhaseOffset, 0.0f);
+	}
+
+	// Zero unused slots to prevent stale data
+	for (int32 i = LayerCount; i < Width; ++i)
+	{
+		Pixels[i] = FLinearColor::Black;
+		Pixels[Width + i] = FLinearColor::Black;
+	}
+
+	Mip.BulkData.Unlock();
+	Texture->UpdateResource();
 }
