@@ -73,9 +73,38 @@ ALakeWaterBodyActor::ALakeWaterBodyActor()
 	TiledMesh->SetupAttachment(OceanBody);
 }
 
+// ===================================================================
+// Transform lock — the tiled mesh always shares the root's transform
+// (see OceanWaterBodyActor for rationale)
+// ===================================================================
+
+void ALakeWaterBodyActor::EnforceMeshTransformLock()
+{
+	if (!TiledMesh)
+	{
+		return;
+	}
+
+	if (!TiledMesh->GetRelativeTransform().Equals(FTransform::Identity, 0.1f))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("LakeWaterBodyActor '%s': TiledMesh had a relative offset "
+				"(%.1f, %.1f, %.1f) — snapped back to the root. Move the actor "
+				"itself to reposition the water."),
+			*GetName(),
+			TiledMesh->GetRelativeLocation().X,
+			TiledMesh->GetRelativeLocation().Y,
+			TiledMesh->GetRelativeLocation().Z);
+
+		TiledMesh->SetRelativeTransform(FTransform::Identity);
+	}
+}
+
 void ALakeWaterBodyActor::BeginPlay()
 {
 	Super::BeginPlay();
+	EnforceMeshTransformLock();
+	SyncExtentFromMesh();
 	RefreshMeshMaterial();
 	UpdateBoundsFromWaveConfig();
 }
@@ -89,6 +118,9 @@ void ALakeWaterBodyActor::OnConstruction(const FTransform& Transform)
 	{
 		return;
 	}
+
+	EnforceMeshTransformLock();
+	SyncExtentFromMesh();
 
 	// Ensure MID exists and body is registered with subsystem.
 	OceanBody->InitializeWaterBody();
@@ -143,4 +175,15 @@ void ALakeWaterBodyActor::UpdateBoundsFromWaveConfig()
 	}
 
 	TiledMesh->VerticalBoundsExtension = MaxDisp * 1.5f;
+}
+
+void ALakeWaterBodyActor::SyncExtentFromMesh()
+{
+	if (!OceanBody || !TiledMesh) return;
+
+	OceanBody->Extent = FVector2D(
+		TiledMesh->TilesX * TiledMesh->TileSize * 0.5,
+		TiledMesh->TilesY * TiledMesh->TileSize * 0.5);
+
+	OceanBody->InitializeWaterBody();
 }

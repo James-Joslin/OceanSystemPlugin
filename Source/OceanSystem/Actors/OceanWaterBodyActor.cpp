@@ -92,9 +92,44 @@ AOceanWaterBodyActor::AOceanWaterBodyActor()
 	TiledMesh->LODSubdivisions = { 32, 16, 8 };
 }
 
+// ===================================================================
+// Transform lock — the tiled mesh always shares the root's transform
+// ===================================================================
+//
+// The subsystem registers the physics water level (BaseZ) from the
+// root OceanBody component. If the mesh drifts relative to the root,
+// the rendered surface and the physics surface silently diverge and
+// buoyancy objects float in the air or sink through the visuals.
+// Water is placed by moving the ACTOR, never the mesh child.
+// ===================================================================
+
+void AOceanWaterBodyActor::EnforceMeshTransformLock()
+{
+	if (!TiledMesh)
+	{
+		return;
+	}
+
+	if (!TiledMesh->GetRelativeTransform().Equals(FTransform::Identity, 0.1f))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("OceanWaterBodyActor '%s': TiledMesh had a relative offset "
+				"(%.1f, %.1f, %.1f) — snapped back to the root. Move the actor "
+				"itself to reposition the water."),
+			*GetName(),
+			TiledMesh->GetRelativeLocation().X,
+			TiledMesh->GetRelativeLocation().Y,
+			TiledMesh->GetRelativeLocation().Z);
+
+		TiledMesh->SetRelativeTransform(FTransform::Identity);
+	}
+}
+
 void AOceanWaterBodyActor::BeginPlay()
 {
 	Super::BeginPlay();
+	EnforceMeshTransformLock();
+	SyncExtentFromMesh();
 	RefreshMeshMaterial();
 	UpdateBoundsFromWaveConfig();
 }
@@ -108,6 +143,9 @@ void AOceanWaterBodyActor::OnConstruction(const FTransform& Transform)
 	{
 		return;
 	}
+
+	EnforceMeshTransformLock();
+	SyncExtentFromMesh();
 
 	// Ensure MID exists and body is registered with subsystem.
 	// Skips MID recreation if parent material hasn't changed.
@@ -172,4 +210,18 @@ void AOceanWaterBodyActor::UpdateBoundsFromWaveConfig()
 	}
 
 	TiledMesh->VerticalBoundsExtension = MaxDisplacement * 1.5f;
+}
+
+void AOceanWaterBodyActor::SyncExtentFromMesh()
+{
+	if (!OceanBody || !TiledMesh)
+	{
+		return;
+	}
+
+	OceanBody->Extent = FVector2D(
+		TiledMesh->TilesX * TiledMesh->TileSize * 0.5,
+		TiledMesh->TilesY * TiledMesh->TileSize * 0.5);
+
+	OceanBody->InitializeWaterBody();
 }
