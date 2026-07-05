@@ -25,15 +25,40 @@ FVector FGerstnerEvaluator::DomainWarpPosition(
 	return FVector(WorldPos.X + WX, WorldPos.Y + WY, WorldPos.Z);
 }
 
+float FGerstnerEvaluator::SharpenSineMean(float Sharpness)
+{
+	// Mean of the *uncorrected* sharpened sine (2*((1+sin)/2)^p - 1) over a
+	// full wave cycle. Exact value is 2*Gamma(p+0.5)/(sqrt(pi)*Gamma(p+1)) - 1;
+	// the closed form below approximates it to within ~0.3% for p in [1, 4]
+	// and contains only ops available in HLSL, so the .ush can mirror it
+	// exactly (PARITY CONTRACT).
+	return 2.0f / FMath::Sqrt(UE_PI * (Sharpness + 0.267f)) - 1.0f;
+}
+
 float FGerstnerEvaluator::SharpenSine(float SinValue, float Sharpness)
 {
 	const float Mapped = SinValue * 0.5f + 0.5f;
 	const float Sharp = FMath::Pow(Mapped, Sharpness);
-	return Sharp * 2.0f - 1.0f;
+
+	// Re-centre so the sharpened wave is ZERO-MEAN over a cycle.
+	//
+	// pow() on the remapped sine narrows the crests and widens the troughs,
+	// which drags the cycle average below zero (-0.151 * Amplitude at p=1.5).
+	// Every sharpened layer therefore contributed a hidden negative DC offset
+	// proportional to its amplitude. Because the physics path evaluates only
+	// PhysicsLayerCount layers while the GPU displaces with ALL layers, the
+	// visible surface carried a much larger negative DC than the CPU query —
+	// so buoyancy queries reported a water level that was permanently ABOVE
+	// the rendered surface by 0.151 * (sum of excluded layer amplitudes).
+	// Subtracting the mean makes each layer DC-free, so skipping layers only
+	// removes oscillation, never shifts the resting water level.
+	return (Sharp * 2.0f - 1.0f) - SharpenSineMean(Sharpness);
 }
 
 float FGerstnerEvaluator::SharpenSineDerivative(float SinValue, float CosValue, float Sharpness)
 {
+	// Unchanged by the zero-mean correction in SharpenSine — the subtracted
+	// mean is constant per layer, so its derivative is zero.
 	const float Mapped = SinValue * 0.5f + 0.5f;
 	return Sharpness * FMath::Pow(FMath::Max(Mapped, 0.001f), Sharpness - 1.0f) * CosValue;
 }

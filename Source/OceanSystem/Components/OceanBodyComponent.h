@@ -35,6 +35,14 @@ public:
 		meta = (EditCondition = "BodyType != EOceanBodyType::River"))
 	FVector2D Extent = FVector2D(10000.0, 10000.0);
 
+	/** When true, Extent is automatically synced from a sibling
+		TiledWaterMeshComponent on every registration, so the subsystem
+		query bounds always match the rendered water area exactly.
+		Disable to set Extent manually. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Bounds",
+		meta = (EditCondition = "BodyType != EOceanBodyType::River"))
+	bool bAutoSizeExtentFromMesh = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body")
 	int32 Priority = 0;
 
@@ -84,6 +92,15 @@ public:
 	void GenerateWavesFromConfig();
 
 	// -------------------------------------------------------------------
+	// Debug Visualisation
+	// -------------------------------------------------------------------
+
+	/** Draw a wireframe box showing the subsystem query bounds and BaseZ.
+		Works in both editor viewport and PIE. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Debug")
+	bool bShowDebugBounds = false;
+
+	// -------------------------------------------------------------------
 	// Initialisation
 	// -------------------------------------------------------------------
 
@@ -112,6 +129,13 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
+		FActorComponentTickFunction* ThisTickFunction) override;
+
+	/** Re-register with the subsystem when this component's world Z
+		changes, so the physics water level always tracks placement. */
+	virtual void OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags,
+		ETeleportType Teleport = ETeleportType::None) override;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -119,6 +143,9 @@ protected:
 
 private:
 	FWaterBodyEntry BuildRegistryEntry() const;
+
+	/** World Z at last registration. Sentinel forces first registration. */
+	float LastRegisteredZ = TNumericLimits<float>::Lowest();
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> MaterialInstance = nullptr;

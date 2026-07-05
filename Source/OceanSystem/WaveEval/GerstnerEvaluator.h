@@ -65,8 +65,15 @@ public:
 		float WarpFrequency, float WarpAmount);
 
 	/** Asymmetric crest shaping. Sharpness=1.0 is unchanged sine.
-		>1 gives peaked crests with broad flat troughs. */
+		>1 gives peaked crests with broad flat troughs.
+		Output is zero-mean over a full cycle — required so that skipping
+		layers on the physics path never shifts the resting water level. */
 	static float SharpenSine(float SinValue, float Sharpness);
+
+	/** Cycle-average of the uncorrected sharpened sine. Subtracted inside
+		SharpenSine to keep each layer DC-free. Must be mirrored in
+		GerstnerWave.ush (PARITY CONTRACT). */
+	static float SharpenSineMean(float Sharpness);
 
 	/** Derivative of SharpenSine for matching normals. */
 	static float SharpenSineDerivative(float SinValue, float CosValue, float Sharpness);

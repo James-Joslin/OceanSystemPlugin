@@ -25,6 +25,12 @@ namespace OceanMID
 	// Detail layers — per-pixel normal evaluation
 	static const FName DetailWaveCountName(TEXT("DetailWaveCount"));
 	static const FName DetailWaveDataTexName(TEXT("DetailWaveDataTexture"));
+
+	// Visual shaping — pushed from the component so the shader always
+	// matches the CPU evaluator (single source of truth for parity)
+	static const FName CrestSharpnessName(TEXT("CrestSharpness"));
+	static const FName DomainWarpFrequencyName(TEXT("DomainWarpFrequency"));
+	static const FName DomainWarpAmountName(TEXT("DomainWarpAmount"));
 }
 
 // ===================================================================
@@ -682,6 +688,16 @@ void UWaveParameterSubsystem::SyncMaterialInstance(FWaterBodyEntry& Entry, float
 			MID->SetScalarParameterValue(OceanMID::WaveCountName, static_cast<float>(LayerCount));
 			MID->SetTextureParameterValue(OceanMID::WaveDataTexName, Tex);
 		}
+
+		// Push visual shaping so the shader can never drift from the CPU
+		// evaluator. The material must expose these as scalar parameters
+		// and feed them into the custom node — do NOT hardcode values in
+		// the material graph. (Editing CrestSharpness on the component
+		// previously only changed the CPU side; the rendered surface kept
+		// its own value, producing a permanent height offset.)
+		MID->SetScalarParameterValue(OceanMID::CrestSharpnessName, Entry.CrestSharpness);
+		MID->SetScalarParameterValue(OceanMID::DomainWarpFrequencyName, Entry.DomainWarpFrequency);
+		MID->SetScalarParameterValue(OceanMID::DomainWarpAmountName, Entry.DomainWarpAmount);
 
 		Entry.WaveConfig.bDirty = false;
 	}
