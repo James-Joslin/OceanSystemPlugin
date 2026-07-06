@@ -1,4 +1,4 @@
-﻿// Copyright James Joslin. All Rights Reserved.
+// Copyright James Joslin. All Rights Reserved.
 
 #pragma once
 
@@ -36,6 +36,18 @@ class UWaveParameterSubsystem;
  * Only PhysicsLayerCount wave layers are evaluated per sample — the
  * object rides the broad swell and ignores detail chop.
  *
+ * EDITOR WORKFLOW:
+ *   - Sample points draw as cyan spheres in the level editor (actor
+ *     selected) and in the Blueprint editor viewport (component selected
+ *     in the Components panel), via the OceanSystemEditor visualizer.
+ *   - Click a sphere to select it, drag the gizmo to move it, Alt+drag
+ *     to duplicate, Delete to remove, right-click for a context menu.
+ *   - FitGeneratorBoxToRootMesh sizes the generator box to the root
+ *     mesh's local bounds, then regenerates the grid — a one-click
+ *     starting layout matched to the hull shape.
+ *   - MakeEditWidget also gives each array element a small draggable
+ *     handle in the level editor as a fallback.
+ *
  * Use GenerateBoxSamplePoints (CallInEditor) to lay out a grid of points
  * on the bottom face of a bounding box, or manually populate SamplePoints.
  */
@@ -55,8 +67,11 @@ public:
 	 * Sample point positions in the owning actor's local space.
 	 * Each submerged point applies force at its world location,
 	 * naturally producing torques when the body tilts.
+	 * MakeEditWidget: each element gets a draggable 3D handle in the
+	 * level editor viewport when the actor is selected.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buoyancy")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buoyancy",
+		meta = (MakeEditWidget = true))
 	TArray<FVector> SamplePoints;
 
 	/**
@@ -143,6 +158,14 @@ public:
 	// Sample Point Generator
 	// -------------------------------------------------------------------
 
+	/**
+	 * Centre of the generator box in actor local space. Lets the grid
+	 * follow meshes whose pivot is not at their geometric centre
+	 * (FitGeneratorBoxToRootMesh sets this automatically).
+	 */
+	UPROPERTY(EditAnywhere, Category = "Buoyancy|Generator")
+	FVector BoxCenter = FVector::ZeroVector;
+
 	/** Half-extents of the bounding box for sample point generation. */
 	UPROPERTY(EditAnywhere, Category = "Buoyancy|Generator")
 	FVector BoxHalfExtents = FVector(50.0f, 50.0f, 50.0f);
@@ -152,9 +175,35 @@ public:
 		meta = (ClampMin = "2", ClampMax = "8"))
 	int32 BoxPointsPerAxis = 3;
 
+	/** Draw the generator box in editor viewports (via the visualizer). */
+	UPROPERTY(EditAnywhere, Category = "Buoyancy|Generator")
+	bool bDrawGeneratorBox = true;
+
 	/** Generate an N x N grid of points on the bottom face of the box. */
 	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Buoyancy|Generator")
 	void GenerateBoxSamplePoints();
+
+	/**
+	 * Fit the generator box to the root primitive's local bounds
+	 * (mesh shape), then regenerate the bottom-face grid. One click
+	 * to get a starting layout matched to the hull, ready for manual
+	 * refinement in the viewport.
+	 */
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Buoyancy|Generator")
+	void FitGeneratorBoxToRootMesh();
+
+	/** Append a new sample point at the bottom-centre of the generator box. */
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Buoyancy|Generator")
+	void AddSamplePoint();
+
+	/**
+	 * Mirror all sample points across the X axis (Y negated about
+	 * BoxCenter.Y). Lay out one side of a hull, mirror to get perfect
+	 * port/starboard symmetry. Points on the centreline and existing
+	 * duplicates are skipped.
+	 */
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Buoyancy|Generator")
+	void MirrorSamplePoints();
 
 	// -------------------------------------------------------------------
 	// Debug
@@ -164,7 +213,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buoyancy|Debug")
 	bool bShowDebug = false;
 
-	/** Radius of the debug point spheres. */
+	/** Radius of the debug point spheres (runtime debug AND editor viz). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buoyancy|Debug",
 		meta = (ClampMin = "1.0", UIMin = "2.0", UIMax = "50.0"))
 	float DebugPointRadius = 8.0f;
