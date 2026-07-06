@@ -1,4 +1,4 @@
-﻿// Copyright James Joslin. All Rights Reserved.
+// Copyright James Joslin. All Rights Reserved.
 
 #include "OceanBuoyancyComponent.h"
 #include "../Subsystem/WaveParameterSubsystem.h"
@@ -296,7 +296,8 @@ void UOceanBuoyancyComponent::PostEditChangeProperty(
 
 	const FName PropName = PropertyChangedEvent.GetMemberPropertyName();
 
-	if (PropName == GET_MEMBER_NAME_CHECKED(UOceanBuoyancyComponent, BoxHalfExtents)
+	if (PropName == GET_MEMBER_NAME_CHECKED(UOceanBuoyancyComponent, BoxCenter)
+		|| PropName == GET_MEMBER_NAME_CHECKED(UOceanBuoyancyComponent, BoxHalfExtents)
 		|| PropName == GET_MEMBER_NAME_CHECKED(UOceanBuoyancyComponent, BoxPointsPerAxis))
 	{
 		GenerateBoxSamplePoints();
@@ -326,12 +327,14 @@ void UOceanBuoyancyComponent::GenerateBoxSamplePoints()
 	{
 		for (int32 ix = 0; ix < N; ++ix)
 		{
-			const float X = FMath::Lerp(-BoxHalfExtents.X, BoxHalfExtents.X,
-				static_cast<float>(ix) / Divisor);
-			const float Y = FMath::Lerp(-BoxHalfExtents.Y, BoxHalfExtents.Y,
-				static_cast<float>(jy) / Divisor);
+			const float X = BoxCenter.X
+				+ FMath::Lerp(-BoxHalfExtents.X, BoxHalfExtents.X,
+					static_cast<float>(ix) / Divisor);
+			const float Y = BoxCenter.Y
+				+ FMath::Lerp(-BoxHalfExtents.Y, BoxHalfExtents.Y,
+					static_cast<float>(jy) / Divisor);
 
-			SamplePoints.Add(FVector(X, Y, -BoxHalfExtents.Z));
+			SamplePoints.Add(FVector(X, Y, BoxCenter.Z - BoxHalfExtents.Z));
 		}
 	}
 
@@ -340,5 +343,99 @@ void UOceanBuoyancyComponent::GenerateBoxSamplePoints()
 			"(%.2f x %.2f, Z=%.2f)."),
 		SamplePoints.Num(),
 		BoxHalfExtents.X * 2.0f, BoxHalfExtents.Y * 2.0f,
-		-BoxHalfExtents.Z);
+		BoxCenter.Z - BoxHalfExtents.Z);
+}
+
+// ===================================================================
+// Editor Helpers — sample point authoring
+// ===================================================================
+
+void UOceanBuoyancyComponent::FitGeneratorBoxToRootMesh()
+{
+	const AActor* Owner = GetOwner();
+	const UPrimitiveComponent* RootPrim =
+		Owner ? Cast<UPrimitiveComponent>(Owner->GetRootComponent()) : nullptr;
+
+	if (!RootPrim)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("BuoyancyComponent on '%s': FitGeneratorBoxToRootMesh — "
+				"root component is not a primitive; nothing to fit to."),
+			Owner ? *Owner->GetName() : TEXT("null"));
+		return;
+	}
+
+#if WITH_EDITOR
+	Modify();
+#endif
+
+	// Local-space bounds of the root primitive, BEFORE actor scale.
+	// Sample points live in actor local space and are transformed by
+	// the full actor transform at runtime (scale included) — exactly
+	// how the mesh itself is scaled — so unscaled local bounds are
+	// the correct fit.
+	const FBoxSphereBounds LocalBounds = RootPrim->CalcBounds(FTransform::Identity);
+
+	BoxCenter = LocalBounds.Origin;
+	BoxHalfExtents = LocalBounds.BoxExtent;
+
+	GenerateBoxSamplePoints();
+
+	UE_LOG(LogTemp, Log,
+		TEXT("BuoyancyComponent: Fit generator box to root mesh — "
+			"centre (%.1f, %.1f, %.1f), half-extents (%.1f, %.1f, %.1f)."),
+		BoxCenter.X, BoxCenter.Y, BoxCenter.Z,
+		BoxHalfExtents.X, BoxHalfExtents.Y, BoxHalfExtents.Z);
+}
+
+void UOceanBuoyancyComponent::AddSamplePoint()
+{
+#if WITH_EDITOR
+	Modify();
+#endif
+
+	SamplePoints.Add(BoxCenter - FVector(0.0f, 0.0f, BoxHalfExtents.Z));
+}
+
+void UOceanBuoyancyComponent::MirrorSamplePoints()
+{
+#if WITH_EDITOR
+	Modify();
+#endif
+
+	constexpr float Tolerance = 1.0f; // cm
+
+	TArray<FVector> Mirrored;
+	Mirrored.Reserve(SamplePoints.Num());
+
+	for (const FVector& Point : SamplePoints)
+	{
+		const float MirroredY = 2.0f * BoxCenter.Y - Point.Y;
+
+		// Skip points on (or within tolerance of) the centreline.
+		if (FMath::Abs(MirroredY - Point.Y) < Tolerance)
+		{
+			continue;
+		}
+
+		const FVector MirroredPoint(Point.X, MirroredY, Point.Z);
+
+		// Skip if a matching point already exists (already symmetric).
+		const bool bAlreadyExists = SamplePoints.ContainsByPredicate(
+			[&MirroredPoint](const FVector& Existing)
+			{
+				return Existing.Equals(MirroredPoint, Tolerance);
+			});
+
+		if (!bAlreadyExists)
+		{
+			Mirrored.Add(MirroredPoint);
+		}
+	}
+
+	SamplePoints.Append(Mirrored);
+
+	UE_LOG(LogTemp, Log,
+		TEXT("BuoyancyComponent: Mirrored sample points — added %d, total %d."),
+		Mirrored.Num(), SamplePoints.Num());
 }
