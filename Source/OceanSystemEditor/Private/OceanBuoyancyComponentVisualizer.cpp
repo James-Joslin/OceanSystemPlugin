@@ -4,7 +4,7 @@
 
 // NOTE: adjust this include to match the runtime module's folder layout,
 // e.g. "Components/OceanBuoyancyComponent.h".
-#include "Components/OceanBuoyancyComponent.h"
+#include "../../OceanSystem/Components/OceanBuoyancyComponent.h"
 
 #include "ActorEditorUtils.h"
 #include "CanvasTypes.h"
