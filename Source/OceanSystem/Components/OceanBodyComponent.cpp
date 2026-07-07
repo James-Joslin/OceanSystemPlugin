@@ -3,6 +3,7 @@
 #include "OceanBodyComponent.h"
 #include "TiledWaterMeshComponent.h"
 #include "../Subsystem/WaveParameterSubsystem.h"
+#include "Components/SplineComponent.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
@@ -242,7 +243,8 @@ void UOceanBodyComponent::PostEditChangeProperty(
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, Extent)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, DomainWarpFrequency)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, DomainWarpAmount)
-		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, CrestSharpness))
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, CrestSharpness)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, BlendWidth))
 	{
 		if (Subsystem)
 		{
@@ -436,8 +438,50 @@ FWaterBodyEntry UOceanBodyComponent::BuildRegistryEntry() const
 		break;
 	}
 	case EOceanBodyType::River:
-		Entry.RiverHalfWidth = 0.0f;
+	{
+		// Find the sibling spline component on the owning actor.
+		// For RiverWaterBodyActor this is the root USplineComponent.
+		const AActor* OwnerActor = GetOwner();
+		if (OwnerActor)
+		{
+			if (const USplineComponent* Spline =
+				OwnerActor->FindComponentByClass<USplineComponent>())
+			{
+				Entry.SplineData = const_cast<USplineComponent*>(Spline);
+			}
+
+			// Pull RiverWidth and FlowSpeed from the owning actor.
+			// Uses FindField-style reflection-free approach: check for
+			// the ARiverWaterBodyActor type directly.
+			const FProperty* WidthProp = OwnerActor->GetClass()->FindPropertyByName(
+				TEXT("RiverWidth"));
+			if (WidthProp)
+			{
+				const float* WidthPtr = WidthProp->ContainerPtrToValuePtr<float>(OwnerActor);
+				if (WidthPtr)
+				{
+					Entry.RiverHalfWidth = (*WidthPtr) * 0.5f;
+				}
+			}
+
+			const FProperty* FlowProp = OwnerActor->GetClass()->FindPropertyByName(
+				TEXT("FlowSpeed"));
+			if (FlowProp)
+			{
+				const float* FlowPtr = FlowProp->ContainerPtrToValuePtr<float>(OwnerActor);
+				if (FlowPtr)
+				{
+					Entry.FlowSpeed = *FlowPtr;
+				}
+			}
+		}
+
+		if (Entry.RiverHalfWidth <= 0.0f)
+		{
+			Entry.RiverHalfWidth = 250.0f; // Sensible fallback
+		}
 		break;
+	}
 	}
 
 	return Entry;

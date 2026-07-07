@@ -1,6 +1,7 @@
 ﻿// Copyright James Joslin. All Rights Reserved.
 
 #include "WaveParameterSubsystem.h"
+#include "../Components/OceanBodyComponent.h"
 #include "Components/SplineComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
@@ -31,6 +32,12 @@ namespace OceanMID
 	static const FName CrestSharpnessName(TEXT("CrestSharpness"));
 	static const FName DomainWarpFrequencyName(TEXT("DomainWarpFrequency"));
 	static const FName DomainWarpAmountName(TEXT("DomainWarpAmount"));
+
+	// Blend zone — depth fade width for material-side edge blending
+	static const FName BlendWidthName(TEXT("BlendWidth"));
+
+	// River — flow speed for UV scrolling along spline tangent
+	static const FName FlowSpeedName(TEXT("FlowSpeed"));
 }
 
 // ===================================================================
@@ -293,14 +300,14 @@ bool UWaveParameterSubsystem::GetWaveData(const FVector& WorldPos, FGerstnerResu
 
 	if (Query.IsBlending())
 	{
-		// Blend zone — interpolate between primary and secondary configs
+		// Blend zone — evaluate each body with its own visual shaping
+		// (domain warp + crest sharpness) so the CPU result matches the
+		// rendered surface on both sides, then lerp by blend alpha.
 		const FWaterBodyEntry& Primary = WaterBodies[Query.PrimaryIndex];
 		const FWaterBodyEntry& Secondary = WaterBodies[Query.SecondaryIndex];
 
-		// For river bodies, use spline evaluator to get the correct BaseZ.
-		// For flat bodies, use the stored BaseZ.
-		// EvaluatePhysicsBlended handles flat/flat blending directly.
-		// River/flat blend: evaluate each body independently and lerp.
+		// EvaluateBody dispatches to the correct evaluator (flat or spline)
+		// and applies each body's visual params internally.
 		const FGerstnerResult ResultA = EvaluateBody(Primary, WorldPos, WorldTime, /*bFullEval=*/false);
 		const FGerstnerResult ResultB = EvaluateBody(Secondary, WorldPos, WorldTime, /*bFullEval=*/false);
 
@@ -543,20 +550,90 @@ void UWaveParameterSubsystem::DetectBlendZones(int32 NewBodyIndex)
 
 		if (bOverlaps)
 		{
-			// Determine blend width: use the smaller of the two bodies' blend widths
-			// (stored on the WaterBodyEntry; defaults set by the component).
-			// For now, use a hardcoded default. Phase 4 components will populate
-			// a BlendWidth field on the entry.
-			constexpr float DefaultBlendWidth = 200.0f;
+			// Use the smaller of the two bodies' blend widths so the
+			// narrower body controls the transition zone.
+			const float WidthA = NewEntry.Owner.IsValid()
+				? NewEntry.Owner->BlendWidth : 200.0f;
+			const float WidthB = Other.Owner.IsValid()
+				? Other.Owner->BlendWidth : 200.0f;
 
 			FBlendZoneEntry BZ;
 			BZ.BodyA = NewEntry.Owner;
 			BZ.BodyB = Other.Owner;
-			BZ.BlendWidth = DefaultBlendWidth;
+			BZ.BlendWidth = FMath::Min(WidthA, WidthB);
 			BZ.BlendType = EBlendType::DepthFade;
 
 			NewEntry.BlendZones.Add(BZ);
 			Other.BlendZones.Add(BZ);
+		}
+	}
+
+	// ---- River endpoint auto-detection ----
+	// If the newly registered body is a river, check whether each spline
+	// endpoint falls inside any other water body. If so, create a blend
+	// zone automatically so the river mouth transitions smoothly into the
+	// ocean or lake without requiring manual overlap placement.
+	if (NewEntry.BodyType == EOceanBodyType::River && NewEntry.SplineData.IsValid())
+	{
+		const USplineComponent* Spline = NewEntry.SplineData.Get();
+		const float SplineLength = Spline->GetSplineLength();
+
+		// Test both endpoints (start and end of the spline)
+		for (int32 EndpointIdx = 0; EndpointIdx < 2; ++EndpointIdx)
+		{
+			const float Distance = (EndpointIdx == 0) ? 0.0f : SplineLength;
+			const FVector EndpointWorld = Spline->GetLocationAtDistanceAlongSpline(
+				Distance, ESplineCoordinateSpace::World);
+			const FVector2D EndpointXY(EndpointWorld.X, EndpointWorld.Y);
+
+			for (int32 i = 0; i < WaterBodies.Num(); ++i)
+			{
+				if (i == NewBodyIndex)
+				{
+					continue;
+				}
+
+				const FWaterBodyEntry& Other = WaterBodies[i];
+				if (!Other.Owner.IsValid())
+				{
+					continue;
+				}
+
+				// Skip if a blend zone between these two already exists
+				bool bAlreadyBlended = false;
+				for (const FBlendZoneEntry& ExistingBZ : NewEntry.BlendZones)
+				{
+					if ((ExistingBZ.BodyA == NewEntry.Owner && ExistingBZ.BodyB == Other.Owner) ||
+						(ExistingBZ.BodyA == Other.Owner && ExistingBZ.BodyB == NewEntry.Owner))
+					{
+						bAlreadyBlended = true;
+						break;
+					}
+				}
+				if (bAlreadyBlended)
+				{
+					continue;
+				}
+
+				// If the river endpoint is inside this other body, create a
+				// blend zone — the river flows into or out of this body.
+				if (IsPointInBody(Other, EndpointXY))
+				{
+					const float WidthRiver = NewEntry.Owner.IsValid()
+						? NewEntry.Owner->BlendWidth : 200.0f;
+					const float WidthOther = Other.Owner.IsValid()
+						? Other.Owner->BlendWidth : 200.0f;
+
+					FBlendZoneEntry BZ;
+					BZ.BodyA = NewEntry.Owner;
+					BZ.BodyB = Other.Owner;
+					BZ.BlendWidth = FMath::Min(WidthRiver, WidthOther);
+					BZ.BlendType = EBlendType::DepthFade;
+
+					WaterBodies[NewBodyIndex].BlendZones.Add(BZ);
+					WaterBodies[i].BlendZones.Add(BZ);
+				}
+			}
 		}
 	}
 }
@@ -597,20 +674,18 @@ FGerstnerResult UWaveParameterSubsystem::EvaluateBody(
 		const USplineComponent* Spline = Entry.SplineData.Get();
 		if (Spline)
 		{
-			// River: domain warp the position, then evaluate along spline.
-			// CrestSharpness applied via the internal loop.
-			const float ScaledTime = WorldTime * Entry.WaveConfig.TimeScale;
-			const FVector WarpedPos = (Entry.DomainWarpAmount > UE_KINDA_SMALL_NUMBER)
-				? FGerstnerEvaluator::DomainWarpPosition(
-					WorldPos, ScaledTime,
-					Entry.DomainWarpFrequency, Entry.DomainWarpAmount)
-				: WorldPos;
-
-			// Spline evaluators don't have a visual variant yet —
-			// use standard eval at the warped position.
+			// River: visual spline evaluators handle domain warp, crest
+			// sharpening, and spline BaseZ lookup internally — full GPU
+			// parity on the CPU path.
 			return bFullEval
-				? FGerstnerEvaluator::EvaluateAlongSpline(WarpedPos, WorldTime, Spline, Entry.WaveConfig)
-				: FGerstnerEvaluator::EvaluatePhysicsAlongSpline(WarpedPos, WorldTime, Spline, Entry.WaveConfig);
+				? FGerstnerEvaluator::EvaluateVisualAlongSpline(
+					WorldPos, WorldTime, Spline, Entry.WaveConfig,
+					Entry.DomainWarpFrequency, Entry.DomainWarpAmount,
+					Entry.CrestSharpness)
+				: FGerstnerEvaluator::EvaluatePhysicsVisualAlongSpline(
+					WorldPos, WorldTime, Spline, Entry.WaveConfig,
+					Entry.DomainWarpFrequency, Entry.DomainWarpAmount,
+					Entry.CrestSharpness);
 		}
 		// Fallback: flat visual eval at BaseZ
 		return bFullEval
@@ -698,6 +773,17 @@ void UWaveParameterSubsystem::SyncMaterialInstance(FWaterBodyEntry& Entry, float
 		MID->SetScalarParameterValue(OceanMID::CrestSharpnessName, Entry.CrestSharpness);
 		MID->SetScalarParameterValue(OceanMID::DomainWarpFrequencyName, Entry.DomainWarpFrequency);
 		MID->SetScalarParameterValue(OceanMID::DomainWarpAmountName, Entry.DomainWarpAmount);
+
+		// Push blend width for material-side depth fade at body edges.
+		// The material reads this scalar and fades opacity where depth
+		// below the surface is less than BlendWidth.
+		const float BlendWidth = Entry.Owner.IsValid()
+			? Entry.Owner->BlendWidth : 200.0f;
+		MID->SetScalarParameterValue(OceanMID::BlendWidthName, BlendWidth);
+
+		// Push flow speed for river UV scrolling. Zero for ocean/lake —
+		// the material ignores it when unused.
+		MID->SetScalarParameterValue(OceanMID::FlowSpeedName, Entry.FlowSpeed);
 
 		Entry.WaveConfig.bDirty = false;
 	}
