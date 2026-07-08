@@ -7,6 +7,92 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/StaticMesh.h"
 
+// ===================================================================
+// Custom primitive data — river-space shader coordinates
+// ===================================================================
+//
+// Each spline mesh segment carries four floats of custom primitive
+// data so the material can reconstruct a continuous "river space"
+// coordinate system (downstream distance, signed cross-width offset)
+// that is seam-free across segment boundaries. Consumed by the river
+// material for flow UV scrolling and endpoint/bank edge fades.
+//
+// Custom primitive data is per-component, so this works with the
+// single shared MID from OceanBodyComponent — no per-segment MIDs.
+//
+// KEEP IN SYNC with the CustomPrimitiveData indices in the material.
+// ===================================================================
+
+namespace RiverCPD
+{
+	/** Slot 0 — distance along the spline at the segment start (cm). */
+	static constexpr int32 SegmentStartDist = 0;
+
+	/** Slot 1 — arc length of this segment (cm). */
+	static constexpr int32 SegmentLength = 1;
+
+	/** Slot 2 — full river cross-section width (cm). */
+	static constexpr int32 Width = 2;
+
+	/** Slot 3 — total spline length (cm), or -1.0 when the spline is a
+		closed loop. Negative disables the endpoint fade in the material
+		(a loop has no endpoints to fade at). */
+	static constexpr int32 TotalLength = 3;
+}
+
+/**
+ * Push per-segment river-space data and translucency sorting to one
+ * spline mesh segment. Called on creation and on every transform
+ * update so the values track spline edits and width changes.
+ */
+static void ApplyRiverSegmentShaderData(
+	USplineMeshComponent* Mesh,
+	const USplineComponent* Spline,
+	int32 SegmentIndex,
+	float RiverWidth,
+	int32 TranslucentSortPriority)
+{
+	if (!Mesh || !Spline)
+	{
+		return;
+	}
+
+	const int32 NumPoints = Spline->GetNumberOfSplinePoints();
+	if (NumPoints < 2)
+	{
+		return;
+	}
+
+	const int32 NextIdx = (SegmentIndex + 1) % NumPoints;
+	const float SplineLength = Spline->GetSplineLength();
+
+	const float StartDist =
+		Spline->GetDistanceAlongSplineAtSplinePoint(SegmentIndex);
+
+	float SegLength =
+		Spline->GetDistanceAlongSplineAtSplinePoint(NextIdx) - StartDist;
+
+	// Closed-loop wrap: the final segment's end point is point 0, whose
+	// distance along the spline is 0 — the subtraction goes negative.
+	// The true length is the remainder of the loop.
+	if (SegLength <= 0.0f)
+	{
+		SegLength += SplineLength;
+	}
+
+	Mesh->SetCustomPrimitiveDataFloat(RiverCPD::SegmentStartDist, StartDist);
+	Mesh->SetCustomPrimitiveDataFloat(RiverCPD::SegmentLength, SegLength);
+	Mesh->SetCustomPrimitiveDataFloat(RiverCPD::Width, RiverWidth);
+	Mesh->SetCustomPrimitiveDataFloat(RiverCPD::TotalLength,
+		Spline->IsClosedLoop() ? -1.0f : SplineLength);
+
+	// Near-coplanar translucent surfaces (river over lake/ocean) sort by
+	// bounds origin per frame and can flip draw order unpredictably. Pin
+	// the order to the body priority so higher-priority water always
+	// renders on top of lower-priority water.
+	Mesh->SetTranslucentSortPriority(TranslucentSortPriority);
+}
+
 ARiverWaterBodyActor::ARiverWaterBodyActor()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -155,7 +241,9 @@ void ARiverWaterBodyActor::PostEditChangeProperty(
 		RefreshMeshMaterial();
 	}
 
-	// Width changed — update scale on existing segments (no rebuild)
+	// Width changed — update scale on existing segments (no rebuild).
+	// UpdateSegmentTransforms also refreshes the custom primitive data
+	// so the material's cross-width coordinate tracks the new width.
 	if (MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, RiverWidth))
 	{
 		UpdateSegmentTransforms();
@@ -314,6 +402,13 @@ USplineMeshComponent* ARiverWaterBodyActor::CreateSegmentMesh(
 		EndPos, EndTangent,
 		/*bUpdateMesh=*/true);
 
+	// River-space custom primitive data (flow UVs, edge fades) and
+	// translucency sort priority. Safe pre-registration — the render
+	// proxy picks the values up when it is created.
+	ApplyRiverSegmentShaderData(
+		Mesh, RiverSpline, SegmentIndex, RiverWidth,
+		OceanBody ? OceanBody->Priority : 20);
+
 	Mesh->RegisterComponent();
 
 	return Mesh;
@@ -356,6 +451,12 @@ void ARiverWaterBodyActor::UpdateSegmentTransforms()
 
 		Mesh->SetStartScale(FVector2D(WidthScale, 1.0f));
 		Mesh->SetEndScale(FVector2D(WidthScale, 1.0f));
+
+		// Keep river-space data current — spline drags change segment
+		// lengths and start distances, width edits change slot 2.
+		ApplyRiverSegmentShaderData(
+			Mesh, RiverSpline, i, RiverWidth,
+			OceanBody ? OceanBody->Priority : 20);
 	}
 }
 
@@ -395,6 +496,19 @@ void ARiverWaterBodyActor::RefreshMeshMaterial()
 			TEXT("RiverWaterBodyActor '%s': No material — set BaseMaterial on OceanBody."),
 			*GetName());
 		return;
+	}
+
+	// Falling back to the base material means WaveCount stays at its
+	// default of 0 — the surface will render but never displace. Shout
+	// so this can't fail silently again.
+	if (!MID)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("RiverWaterBodyActor '%s': Applying BASE material — no MID yet, "
+				"so wave parameters will not be synced and WPO will be flat. "
+				"InitializeWaterBody() should have created the MID; check that "
+				"BaseMaterial is set on the OceanBody component."),
+			*GetName());
 	}
 
 	for (USplineMeshComponent* Mesh : SegmentMeshes)
