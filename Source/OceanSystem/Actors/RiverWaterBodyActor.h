@@ -9,17 +9,24 @@
 class USplineComponent;
 class USplineMeshComponent;
 class UOceanBodyComponent;
+class UStaticMesh;
 
 /**
  * Water body actor for rivers defined by a spline path.
  *
  * The USplineComponent is the root and defines the river centreline.
  * Each segment between spline points becomes a USplineMeshComponent
- * deforming a flat grid plane along the curve. Gradient is handled
+ * deforming a source mesh along the curve. Gradient is handled
  * naturally via spline point Z positions.
  *
+ * The source mesh (RiverSegmentMesh) should be a flat subdivided
+ * plane — author it in Blender at 100×100 units, subdivide to the
+ * desired resolution, and export with LOD levels. The engine's
+ * built-in static mesh LOD system handles distance-based transitions
+ * automatically. SplineMeshComponent StartScale/EndScale drive the
+ * actual river width from the RiverWidth property.
+ *
  * Unlike ocean/lake actors, rivers do NOT use UTiledWaterMeshComponent.
- * The spline mesh geometry follows the river path directly.
  */
 UCLASS(meta = (DisplayName = "River Water Body"))
 class OCEANSYSTEM_API ARiverWaterBodyActor : public AActor
@@ -45,15 +52,20 @@ public:
 	// River Properties
 	// -------------------------------------------------------------------
 
-	/** Cross-section width of the river in world units. */
+	/** Subdivided plane mesh deformed along each spline segment.
+		Author in Blender: 100×100 unit plane, subdivided, with LODs.
+		The engine's static mesh LOD system handles distance transitions.
+		If unset, falls back to the engine's BasicShapes/Plane (2 tris,
+		no LODs — only useful for testing). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "River|Geometry")
+	TSoftObjectPtr<UStaticMesh> RiverSegmentMesh;
+
+	/** Cross-section width of the river in world units.
+		Drives SplineMeshComponent StartScale/EndScale relative to the
+		source mesh's Y extent (100 units for the standard plane). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "River|Geometry",
 		meta = (ClampMin = "10.0", UIMin = "50.0", UIMax = "5000.0"))
 	float RiverWidth = 500.0f;
-
-	/** Mesh subdivisions per spline segment (cross-section resolution). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "River|Geometry",
-		meta = (ClampMin = "2", ClampMax = "128", UIMin = "8", UIMax = "64"))
-	int32 SegmentSubdivisions = 32;
 
 	/** UV scroll speed along the spline tangent for flow direction.
 		Pushed to the MID as "FlowSpeed" so the river material can
@@ -89,13 +101,19 @@ private:
 	/** Destroy all existing spline mesh segment components. */
 	void DestroySegmentMeshes();
 
-	/** Generate a flat grid mesh for a single spline segment.
-		The mesh is a flat plane centred on the origin, RiverWidth wide
-		and SegmentLength long, with SegmentSubdivisions resolution. */
+	/** Update start/end positions, tangents, and width scale on existing
+		segment meshes without creating or destroying components.
+		Called from OnConstruction during spline point drags. */
+	void UpdateSegmentTransforms();
+
+	/** Create a spline mesh component for one spline segment. */
 	USplineMeshComponent* CreateSegmentMesh(
 		int32 SegmentIndex,
 		const FVector& StartPos, const FVector& StartTangent,
 		const FVector& EndPos, const FVector& EndTangent);
+
+	/** Resolve the source mesh — user asset or engine fallback. */
+	UStaticMesh* GetSegmentMesh() const;
 
 	/** All spline mesh segments. Rebuilt on spline edit. */
 	UPROPERTY(Transient)

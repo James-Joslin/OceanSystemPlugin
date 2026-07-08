@@ -5,6 +5,7 @@
 #include "Components/SplineComponent.h"
 #include "Components/SplineMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Engine/StaticMesh.h"
 
 ARiverWaterBodyActor::ARiverWaterBodyActor()
 {
@@ -54,7 +55,7 @@ ARiverWaterBodyActor::ARiverWaterBodyActor()
 	Gen.LargeWaveSteepness = 0.15f;
 	Gen.SmallWaveSteepness = 0.4f;
 	Gen.SteepnessFalloff = 1.0f;
-	Gen.DominantWindAngle = 0.0f;   // 0° = +X, aligned to default spline tangent
+	Gen.DominantWindAngle = 0.0f;   // 0 degrees = +X, aligned to default spline tangent
 	Gen.DirectionAngularSpread = 40.0f;  // Narrow spread — waves follow the river
 	Gen.GlobalSpeedMultiplier = 1.5f;    // Faster-moving water feel
 	Gen.NoiseStrength = 0.15f;
@@ -119,9 +120,21 @@ void ARiverWaterBodyActor::OnConstruction(const FTransform& Transform)
 	// Ensure MID exists and body is registered with subsystem.
 	OceanBody->InitializeWaterBody();
 
-	// Rebuild spline meshes if none exist yet (first construction).
-	if (SegmentMeshes.Num() == 0)
+	// Work out how many segments the current spline needs.
+	const int32 NumPoints = RiverSpline->GetNumberOfSplinePoints();
+	const int32 ExpectedSegments = (NumPoints < 2) ? 0
+		: (RiverSpline->IsClosedLoop() ? NumPoints : NumPoints - 1);
+
+	if (SegmentMeshes.Num() == ExpectedSegments && ExpectedSegments > 0)
 	{
+		// Same segment count — update transforms in place.
+		// This is the hot path during spline point drags: no component
+		// creation/destruction, just SetStartAndEnd on existing meshes.
+		UpdateSegmentTransforms();
+	}
+	else
+	{
+		// Segment count changed (point added/removed, or first build).
 		RebuildRiverMesh();
 	}
 
@@ -135,13 +148,22 @@ void ARiverWaterBodyActor::PostEditChangeProperty(
 
 	const FName MemberName = PropertyChangedEvent.GetMemberPropertyName();
 
-	// Rebuild mesh when geometry properties change
-	if (MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, RiverWidth)
-		|| MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, SegmentSubdivisions)
-		|| MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, RiverSpline))
+	// Source mesh changed — full rebuild to pick up the new asset
+	if (MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, RiverSegmentMesh))
 	{
 		RebuildRiverMesh();
 		RefreshMeshMaterial();
+	}
+
+	// Width changed — update scale on existing segments (no rebuild)
+	if (MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, RiverWidth))
+	{
+		UpdateSegmentTransforms();
+		// Re-register so subsystem picks up new half-width for spatial queries
+		if (OceanBody)
+		{
+			OceanBody->InitializeWaterBody();
+		}
 	}
 
 	// FlowSpeed change — re-register to push new value to subsystem/MID
@@ -154,6 +176,36 @@ void ARiverWaterBodyActor::PostEditChangeProperty(
 	}
 }
 #endif
+
+// ===================================================================
+// Source Mesh
+// ===================================================================
+
+UStaticMesh* ARiverWaterBodyActor::GetSegmentMesh() const
+{
+	// Try the user-assigned mesh first
+	UStaticMesh* Mesh = RiverSegmentMesh.LoadSynchronous();
+	if (Mesh)
+	{
+		return Mesh;
+	}
+
+	// Fallback: engine's basic plane (2 tris, no LODs).
+	// Usable for testing but not production — log a reminder.
+	UStaticMesh* FallbackMesh = LoadObject<UStaticMesh>(
+		nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+
+	if (FallbackMesh)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("RiverWaterBodyActor '%s': No RiverSegmentMesh assigned — "
+				"using engine Plane fallback (2 tris, no LODs). Assign a "
+				"subdivided plane mesh for proper WPO and LOD support."),
+			*GetName());
+	}
+
+	return FallbackMesh;
+}
 
 // ===================================================================
 // Mesh Generation
@@ -227,52 +279,84 @@ USplineMeshComponent* ARiverWaterBodyActor::CreateSegmentMesh(
 	}
 
 	Mesh->SetupAttachment(RiverSpline);
-	Mesh->RegisterComponent();
 
-	// USplineMeshComponent needs a static mesh source to deform.
-	// Use a runtime-generated flat plane. The SplineMeshComponent
-	// will deform it along the spline. We use the Engine's built-in
-	// plane mesh as the source geometry.
-	//
-	// The flat plane is oriented so that:
-	//   X axis = along the spline (forward/flow direction)
-	//   Y axis = cross-section (river width)
-	//   Z axis = up (displaced by Gerstner WPO in the material)
-	//
-	// The SplineMeshComponent handles the deformation from the flat
-	// plane into the spline curve automatically.
-
-	// Find the engine's 1x1 plane static mesh
-	UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(
-		nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
-
-	if (PlaneMesh)
-	{
-		Mesh->SetStaticMesh(PlaneMesh);
-	}
-
-	// Scale to river width — the engine plane is 100x100 units,
-	// so we scale Y to match RiverWidth.
-	const float HalfWidth = RiverWidth * 0.5f;
-	Mesh->SetRelativeScale3D(FVector(1.0f, RiverWidth / 100.0f, 1.0f));
-
-	// Set spline points for this segment
-	Mesh->SetStartAndEnd(
-		StartPos, StartTangent,
-		EndPos, EndTangent,
-		/*bUpdateMesh=*/true);
-
-	// Forward axis is X — the spline mesh deforms along X
-	Mesh->SetForwardAxis(ESplineMeshAxis::X);
+	// Mobility must be set before registration so the render proxy
+	// is created with the right flags.
+	Mesh->SetMobility(EComponentMobility::Movable);
 
 	// Disable collision — water surfaces don't block movement,
 	// buoyancy is handled by the CPU evaluator.
 	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
-	// Mobility must match the actor for spline mesh to work
-	Mesh->SetMobility(EComponentMobility::Movable);
+	// Assign the source mesh — user asset with LODs, or engine fallback.
+	UStaticMesh* SourceMesh = GetSegmentMesh();
+	if (SourceMesh)
+	{
+		Mesh->SetStaticMesh(SourceMesh);
+	}
+
+	// Forward axis MUST be set before SetStartAndEnd — it controls
+	// which axis of the source mesh is remapped along the spline.
+	// X = the plane's length axis follows the river path.
+	Mesh->SetForwardAxis(ESplineMeshAxis::X);
+
+	// Cross-section width via SplineMeshComponent's own scale system.
+	// The source mesh should be 100 units wide in Y (standard convention).
+	// StartScale/EndScale control the two axes perpendicular to
+	// ForwardAxis (Y and Z when ForwardAxis=X).
+	const float WidthScale = RiverWidth / 100.0f;
+	Mesh->SetStartScale(FVector2D(WidthScale, 1.0f));
+	Mesh->SetEndScale(FVector2D(WidthScale, 1.0f));
+
+	// Set spline points for this segment — drives the deformation.
+	Mesh->SetStartAndEnd(
+		StartPos, StartTangent,
+		EndPos, EndTangent,
+		/*bUpdateMesh=*/true);
+
+	Mesh->RegisterComponent();
 
 	return Mesh;
+}
+
+void ARiverWaterBodyActor::UpdateSegmentTransforms()
+{
+	if (!RiverSpline)
+	{
+		return;
+	}
+
+	const int32 NumPoints = RiverSpline->GetNumberOfSplinePoints();
+	const int32 NumSegments = SegmentMeshes.Num();
+	const float WidthScale = RiverWidth / 100.0f;
+
+	for (int32 i = 0; i < NumSegments; ++i)
+	{
+		USplineMeshComponent* Mesh = SegmentMeshes[i];
+		if (!Mesh)
+		{
+			continue;
+		}
+
+		const int32 NextIdx = (i + 1) % NumPoints;
+
+		const FVector StartPos = RiverSpline->GetLocationAtSplinePoint(
+			i, ESplineCoordinateSpace::Local);
+		const FVector StartTangent = RiverSpline->GetTangentAtSplinePoint(
+			i, ESplineCoordinateSpace::Local);
+		const FVector EndPos = RiverSpline->GetLocationAtSplinePoint(
+			NextIdx, ESplineCoordinateSpace::Local);
+		const FVector EndTangent = RiverSpline->GetTangentAtSplinePoint(
+			NextIdx, ESplineCoordinateSpace::Local);
+
+		Mesh->SetStartAndEnd(
+			StartPos, StartTangent,
+			EndPos, EndTangent,
+			/*bUpdateMesh=*/true);
+
+		Mesh->SetStartScale(FVector2D(WidthScale, 1.0f));
+		Mesh->SetEndScale(FVector2D(WidthScale, 1.0f));
+	}
 }
 
 void ARiverWaterBodyActor::DestroySegmentMeshes()
