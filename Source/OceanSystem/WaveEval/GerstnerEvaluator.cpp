@@ -153,7 +153,63 @@ FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsAlongSpline(
 }
 
 // ---------------------------------------------------------------------------
-// Public — Blended evaluator
+// Public — Spline-surface visual evaluators (river — domain warp + crest sharpening)
+// ---------------------------------------------------------------------------
+
+FGerstnerResult FGerstnerEvaluator::EvaluateVisualAlongSpline(
+	const FVector& WorldPos, float Time,
+	const USplineComponent* Spline, const FWaveConfig& Config,
+	float WarpFrequency, float WarpAmount, float CrestSharpness)
+{
+	if (!Spline)
+	{
+		// Fallback: flat visual eval at WorldPos.Z
+		return EvaluateVisual(WorldPos, Time, WorldPos.Z, Config,
+			WarpFrequency, WarpAmount, CrestSharpness);
+	}
+
+	// Domain warp the position before finding the closest spline point
+	const float ScaledTime = Time * Config.TimeScale;
+	const FVector WarpedPos = (WarpAmount > UE_KINDA_SMALL_NUMBER)
+		? DomainWarpPosition(WorldPos, ScaledTime, WarpFrequency, WarpAmount)
+		: WorldPos;
+
+	const FVector ClosestPoint = Spline->FindLocationClosestToWorldLocation(
+		WarpedPos, ESplineCoordinateSpace::World);
+	const float SplineBaseZ = ClosestPoint.Z;
+
+	return EvaluateInternal(WarpedPos, Time, SplineBaseZ, Config,
+		Config.GetTotalLayerCount(), CrestSharpness);
+}
+
+FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsVisualAlongSpline(
+	const FVector& WorldPos, float Time,
+	const USplineComponent* Spline, const FWaveConfig& Config,
+	float WarpFrequency, float WarpAmount, float CrestSharpness)
+{
+	if (!Spline)
+	{
+		// Fallback: flat physics visual eval at WorldPos.Z
+		return EvaluatePhysicsVisual(WorldPos, Time, WorldPos.Z, Config,
+			WarpFrequency, WarpAmount, CrestSharpness);
+	}
+
+	// Domain warp the position before finding the closest spline point
+	const float ScaledTime = Time * Config.TimeScale;
+	const FVector WarpedPos = (WarpAmount > UE_KINDA_SMALL_NUMBER)
+		? DomainWarpPosition(WorldPos, ScaledTime, WarpFrequency, WarpAmount)
+		: WorldPos;
+
+	const FVector ClosestPoint = Spline->FindLocationClosestToWorldLocation(
+		WarpedPos, ESplineCoordinateSpace::World);
+	const float SplineBaseZ = ClosestPoint.Z;
+
+	return EvaluateInternal(WarpedPos, Time, SplineBaseZ, Config,
+		Config.GetPhysicsLayerCount(), CrestSharpness);
+}
+
+// ---------------------------------------------------------------------------
+// Public — Blended evaluators
 // ---------------------------------------------------------------------------
 
 FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsBlended(
@@ -166,6 +222,35 @@ FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsBlended(
 		WorldPos, Time, BaseZA, ConfigA, ConfigA.GetPhysicsLayerCount());
 	const FGerstnerResult ResultB = EvaluateInternal(
 		WorldPos, Time, BaseZB, ConfigB, ConfigB.GetPhysicsLayerCount());
+
+	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+
+	FGerstnerResult Blended;
+	Blended.Displacement = FMath::Lerp(ResultA.Displacement, ResultB.Displacement, ClampedAlpha);
+	Blended.Normal = FMath::Lerp(ResultA.Normal, ResultB.Normal, ClampedAlpha).GetSafeNormal();
+	Blended.WorldZ = FMath::Lerp(ResultA.WorldZ, ResultB.WorldZ, ClampedAlpha);
+	Blended.FoldIntensity = FMath::Lerp(ResultA.FoldIntensity, ResultB.FoldIntensity, ClampedAlpha);
+
+	return Blended;
+}
+
+FGerstnerResult FGerstnerEvaluator::EvaluatePhysicsBlendedVisual(
+	const FVector& WorldPos, float Time,
+	float BaseZA, const FWaveConfig& ConfigA,
+	float WarpFreqA, float WarpAmtA, float SharpnessA,
+	float BaseZB, const FWaveConfig& ConfigB,
+	float WarpFreqB, float WarpAmtB, float SharpnessB,
+	float Alpha)
+{
+	// Evaluate each side with its own visual shaping — domain warp and
+	// crest sharpness applied independently so the CPU result matches
+	// the rendered surface on both sides of the blend.
+	const FGerstnerResult ResultA = EvaluatePhysicsVisual(
+		WorldPos, Time, BaseZA, ConfigA,
+		WarpFreqA, WarpAmtA, SharpnessA);
+	const FGerstnerResult ResultB = EvaluatePhysicsVisual(
+		WorldPos, Time, BaseZB, ConfigB,
+		WarpFreqB, WarpAmtB, SharpnessB);
 
 	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
 

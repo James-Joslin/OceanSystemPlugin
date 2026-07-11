@@ -307,4 +307,7 @@ struct FWaterBodyEntry
 
 	/** Crest sharpness — asymmetric crest/trough shaping. 1.0 = standard sine. */
 	float CrestSharpness = 1.5f;
+
+	/** River flow speed for UV scrolling along spline tangent. Zero for ocean/lake. */
+	float FlowSpeed = 0.0f;
 };

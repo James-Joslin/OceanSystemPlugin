@@ -143,18 +143,57 @@ public:
 		const USplineComponent* Spline, const FWaveConfig& Config);
 
 	// -------------------------------------------------------------------
-	// Blended evaluator (blend zones between bodies)
+	// Spline-surface visual evaluators (river — domain warp + crest sharpening)
+	// -------------------------------------------------------------------
+
+	/**
+	 * Full visual evaluation along a spline with domain warp and crest sharpening.
+	 * Mirrors EvaluateVisual but derives BaseZ from the spline closest point.
+	 * Use for any CPU query on a river that must match the rendered surface.
+	 */
+	static FGerstnerResult EvaluateVisualAlongSpline(
+		const FVector& WorldPos, float Time,
+		const USplineComponent* Spline, const FWaveConfig& Config,
+		float WarpFrequency, float WarpAmount, float CrestSharpness);
+
+	/**
+	 * Physics-LOD visual evaluation along a spline with domain warp and crest sharpening.
+	 * Mirrors EvaluatePhysicsVisual but derives BaseZ from the spline closest point.
+	 * Use for buoyancy on rivers so objects float on the visible surface.
+	 */
+	static FGerstnerResult EvaluatePhysicsVisualAlongSpline(
+		const FVector& WorldPos, float Time,
+		const USplineComponent* Spline, const FWaveConfig& Config,
+		float WarpFrequency, float WarpAmount, float CrestSharpness);
+
+	// -------------------------------------------------------------------
+	// Blended evaluators (blend zones between bodies)
 	// -------------------------------------------------------------------
 
 	/**
 	 * Physics-LOD blended evaluation between two water body configs.
 	 * Evaluates both configs independently and lerps by Alpha.
 	 * Alpha = 0 → pure A, Alpha = 1 → pure B.
+	 * DEPRECATED: bypasses visual shaping — use EvaluatePhysicsBlendedVisual.
 	 */
 	static FGerstnerResult EvaluatePhysicsBlended(
 		const FVector& WorldPos, float Time,
 		float BaseZA, const FWaveConfig& ConfigA,
 		float BaseZB, const FWaveConfig& ConfigB,
+		float Alpha);
+
+	/**
+	 * Physics-LOD blended evaluation with full visual shaping on both sides.
+	 * Each body's domain warp and crest sharpness are applied independently
+	 * before lerping, so objects in blend zones float on the visible surface.
+	 * Alpha = 0 → pure A, Alpha = 1 → pure B.
+	 */
+	static FGerstnerResult EvaluatePhysicsBlendedVisual(
+		const FVector& WorldPos, float Time,
+		float BaseZA, const FWaveConfig& ConfigA,
+		float WarpFreqA, float WarpAmtA, float SharpnessA,
+		float BaseZB, const FWaveConfig& ConfigB,
+		float WarpFreqB, float WarpAmtB, float SharpnessB,
 		float Alpha);
 
 private:
