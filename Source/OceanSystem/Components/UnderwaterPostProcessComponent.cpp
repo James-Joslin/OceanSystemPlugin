@@ -5,7 +5,6 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
-#include "Engine/Scene.h"
 
 // ===================================================================
 // MID parameter contract — keep in sync with PP_Underwater
@@ -46,14 +45,32 @@ UUnderwaterPostProcessComponent::UUnderwaterPostProcessComponent()
 	// one frame when surfacing/submerging quickly.
 	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 
-	// The component IS the volume: unbound, weight-driven, off by default
-	// so the editor viewport is never affected.
-	bUnbound = true;
-	bEnabled = false;
-	BlendWeight = 0.0f;
-	Priority = 10.0f;
-
 	ApplyGradeSettings();
+}
+
+void UUnderwaterPostProcessComponent::OnRegister()
+{
+	Super::OnRegister();
+
+	// Same registration UPostProcessComponent performs internally: put
+	// ourselves in the world's post-process volume list. The renderer
+	// polls GetProperties() every frame from then on — BlendWeight 0
+	// reports the volume disabled, so registering while above water
+	// (or in the editor, where tick never runs) has no visual effect.
+	if (UWorld* World = GetWorld())
+	{
+		World->InsertPostProcessVolume(this);
+	}
+}
+
+void UUnderwaterPostProcessComponent::OnUnregister()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->RemovePostProcessVolume(this);
+	}
+
+	Super::OnUnregister();
 }
 
 void UUnderwaterPostProcessComponent::BeginPlay()
@@ -131,13 +148,49 @@ void UUnderwaterPostProcessComponent::PostEditChangeProperty(
 #endif
 
 // ===================================================================
+// IInterface_PostProcessVolume
+// ===================================================================
+
+bool UUnderwaterPostProcessComponent::EncompassesPoint(
+	FVector Point, float SphereRadius, float* OutDistanceToPoint)
+{
+	// Unbound volume — encompasses everything, distance is always zero.
+	if (OutDistanceToPoint)
+	{
+		*OutDistanceToPoint = 0.0f;
+	}
+	return true;
+}
+
+FPostProcessVolumeProperties UUnderwaterPostProcessComponent::GetProperties() const
+{
+	FPostProcessVolumeProperties Ret;
+	Ret.bIsEnabled = BlendWeight > KINDA_SMALL_NUMBER;
+	Ret.bIsUnbound = true;
+	Ret.BlendRadius = 0.0f;
+	Ret.BlendWeight = BlendWeight;
+	Ret.Priority = Priority;
+	Ret.Settings = &Settings;
+	return Ret;
+}
+
+#if DEBUG_POST_PROCESS_VOLUME_ENABLE
+FString UUnderwaterPostProcessComponent::GetDebugName() const
+{
+	return GetName();
+}
+#endif
+
+// ===================================================================
 // Internal
 // ===================================================================
 
 void UUnderwaterPostProcessComponent::ApplyGradeSettings()
 {
 	// The prototype recipe: darker, teal-shifted, desaturated, vignetted.
-	// All built-in FPostProcessSettings — no material required.
+	// All built-in FPostProcessSettings — no material required. These five
+	// fields are owned by the grade properties; everything else in the
+	// exposed Settings struct is user territory.
 	Settings.bOverride_AutoExposureBias = true;
 	Settings.AutoExposureBias = ExposureBias;
 
@@ -171,11 +224,7 @@ void UUnderwaterPostProcessComponent::SetSubmergedAlpha(
 {
 	BlendWeight = Alpha;
 
-	// Weight 0 volumes are cheap, but disabling entirely skips them in the
-	// scene's PP volume gather — free perf when above water (most of the time).
-	bEnabled = Alpha > KINDA_SMALL_NUMBER;
-
-	if (BlendableMID && bEnabled)
+	if (BlendableMID && Alpha > KINDA_SMALL_NUMBER)
 	{
 		BlendableMID->SetScalarParameterValue(
 			UnderwaterPP::EffectStrengthName, Alpha);
