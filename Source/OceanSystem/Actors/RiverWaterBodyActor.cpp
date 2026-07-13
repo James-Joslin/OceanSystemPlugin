@@ -6,6 +6,7 @@
 #include "Components/SplineMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/StaticMesh.h"
+#include "../Components/UnderwaterPostProcessComponent.h"
 
 // ===================================================================
 // Custom primitive data — river-space shader coordinates

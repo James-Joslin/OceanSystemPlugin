@@ -8,6 +8,8 @@
 
 class UOceanBodyComponent;
 class UTiledWaterMeshComponent;
+class UUnderwaterPostProcessComponent;
+
 
 UCLASS(meta = (DisplayName = "Ocean Water Body"))
 class OCEANSYSTEM_API AOceanWaterBodyActor : public AActor
@@ -31,6 +33,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Ocean")
 	void SyncExtentFromMesh();
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water|Underwater")
+	TObjectPtr<UUnderwaterPostProcessComponent> UnderwaterPP;
 
 	/** Snap the tiled mesh back to the root transform if it has drifted.
 		The rendered surface and the registered physics surface must share

@@ -8,6 +8,8 @@
 
 class UOceanBodyComponent;
 class UTiledWaterMeshComponent;
+class UUnderwaterPostProcessComponent;
+
 
 UCLASS(meta = (DisplayName = "Lake Water Body"))
 class OCEANSYSTEM_API ALakeWaterBodyActor : public AActor
@@ -36,6 +38,9 @@ public:
 		The rendered surface and the registered physics surface must share
 		a transform — reposition water by moving the actor, not the mesh. */
 	void EnforceMeshTransformLock();
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water|Underwater")
+	TObjectPtr<UUnderwaterPostProcessComponent> UnderwaterPP;
 
 protected:
 	virtual void BeginPlay() override;

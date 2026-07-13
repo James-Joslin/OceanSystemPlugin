@@ -4,6 +4,7 @@
 #include "../Components/OceanBodyComponent.h"
 #include "../Components/TiledWaterMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "../Components/UnderwaterPostProcessComponent.h"
 
 AOceanWaterBodyActor::AOceanWaterBodyActor()
 {
