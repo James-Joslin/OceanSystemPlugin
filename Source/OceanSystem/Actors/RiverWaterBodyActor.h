@@ -10,6 +10,7 @@ class USplineComponent;
 class USplineMeshComponent;
 class UOceanBodyComponent;
 class UStaticMesh;
+class UUnderwaterPostProcessComponent;
 
 /**
  * Water body actor for rivers defined by a spline path.
@@ -47,6 +48,9 @@ public:
 	/** Water body component — registered with subsystem for wave eval. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "River")
 	TObjectPtr<UOceanBodyComponent> OceanBody;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water|Underwater")
+	TObjectPtr<UUnderwaterPostProcessComponent> UnderwaterPP;
 
 	// -------------------------------------------------------------------
 	// River Properties
