@@ -14,6 +14,8 @@ ALakeWaterBodyActor::ALakeWaterBodyActor()
 	RootComponent = OceanBody;
 	OceanBody->BodyType = EOceanBodyType::Lake;
 	OceanBody->Priority = 10;
+	UnderwaterPP = CreateDefaultSubobject<UUnderwaterPostProcessComponent>(TEXT("UnderwaterPP"));
+	UnderwaterPP->SetupAttachment(RootComponent);
 
 	// --- Wave generator defaults for a calm lake (all spatial values in cm) ---
 	FWaveGeneratorConfig& Gen = OceanBody->WaveGenerator;

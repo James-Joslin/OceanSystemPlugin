@@ -101,6 +101,8 @@ ARiverWaterBodyActor::ARiverWaterBodyActor()
 	// --- Spline root (river centreline) ---
 	RiverSpline = CreateDefaultSubobject<USplineComponent>(TEXT("RiverSpline"));
 	RootComponent = RiverSpline;
+	UnderwaterPP = CreateDefaultSubobject<UUnderwaterPostProcessComponent>(TEXT("UnderwaterPP"));
+	UnderwaterPP->SetupAttachment(RootComponent);
 
 	// Give the default spline a reasonable starting shape — a gentle curve
 	// rather than a straight line, so the river looks natural on placement.

@@ -15,6 +15,8 @@ AOceanWaterBodyActor::AOceanWaterBodyActor()
 	RootComponent = OceanBody;
 	OceanBody->BodyType = EOceanBodyType::Ocean;
 	OceanBody->Priority = 0;
+	UnderwaterPP = CreateDefaultSubobject<UUnderwaterPostProcessComponent>(TEXT("UnderwaterPP"));
+	UnderwaterPP->SetupAttachment(RootComponent);
 
 	// --- Wave generator defaults for open ocean (all spatial values in cm) ---
 	// Large swells: low steepness (broad rolling motion).
