@@ -7,6 +7,15 @@
 #include "Math/Box2D.h"
 #include "OceanTypes.generated.h"
 
+// ---------------------------------------------------------------------------
+// Shared stats group
+//
+// Declared here (rather than in a single .cpp) so every translation unit in
+// the plugin — wave subsystem, VFX subsystem, future consumers — can hang
+// DECLARE_CYCLE_STATs off the same STATGROUP_OceanSystem.
+// ---------------------------------------------------------------------------
+DECLARE_STATS_GROUP(TEXT("OceanSystem"), STATGROUP_OceanSystem, STATCAT_Advanced);
+
 // Forward declarations for Phase 4+ types used by TWeakObjectPtr
 class UOceanBodyComponent;
 class USplineComponent;
