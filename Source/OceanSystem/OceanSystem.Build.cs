@@ -12,7 +12,8 @@ public class OceanSystem : ModuleRules
             "CoreUObject",
             "Engine",
             "ProceduralMeshComponent",
-            "Niagara"
+            "Niagara",
+            "DeveloperSettings"   // UOceanVfxSettings (Project Settings page)
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
