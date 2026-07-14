@@ -34,6 +34,9 @@ class UNiagaraComponent;
  *       Intensity        (float,  0-1)
  *       ImpactDirection  (vector, unit)
  *       WaterVelocity    (vector, cm/s)
+ *       Extent           (float,  cm — optional size hint; 0 when the
+ *                         requester has none. Wake systems use it as the
+ *                         hull-length spawn extent along local X.)
  */
 UCLASS(BlueprintType)
 class OCEANSYSTEM_API UOceanVfxVariantSet : public UDataAsset
@@ -148,7 +151,8 @@ public:
 		const FVector& Location,
 		const FVector& Direction,
 		float Intensity,
-		const FVector& WaterVelocity = FVector::ZeroVector);
+		const FVector& WaterVelocity = FVector::ZeroVector,
+		float Extent = 0.0f);
 
 	// -------------------------------------------------------------------
 	// Sustained API (looping, heartbeat)
@@ -168,7 +172,8 @@ public:
 		const FVector& Location,
 		const FVector& Direction,
 		float Intensity,
-		const FVector& WaterVelocity = FVector::ZeroVector);
+		const FVector& WaterVelocity = FVector::ZeroVector,
+		float Extent = 0.0f);
 
 	/**
 	 * Optional explicit early release (the heartbeat timeout makes this
@@ -236,7 +241,8 @@ private:
 		const FVector& Direction, bool bAutoRelease);
 	void PushUserParams(
 		UNiagaraComponent& Component, const FVector& Direction,
-		float Intensity, const FVector& WaterVelocity) const;
+		float Intensity, const FVector& WaterVelocity,
+		float Extent) const;
 	void ReleaseEffectComponent(FSustainedEffect& Effect) const;
 	bool GetViewLocation(FVector& OutLocation) const;
 	float ResolveMaxDistance(const UOceanVfxVariantSet& Set) const;

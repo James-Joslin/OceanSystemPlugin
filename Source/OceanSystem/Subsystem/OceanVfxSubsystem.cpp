@@ -17,6 +17,7 @@ namespace OceanVfx
 	static const FName IntensityParam(TEXT("Intensity"));
 	static const FName ImpactDirectionParam(TEXT("ImpactDirection"));
 	static const FName WaterVelocityParam(TEXT("WaterVelocity"));
+	static const FName ExtentParam(TEXT("Extent"));
 
 	/** Burst cooldown spatial hash cell size (cm). Two triggers within
 		the same ~2 m cell share a cooldown. */
@@ -119,7 +120,8 @@ bool UOceanVfxSubsystem::RequestBurst(
 	const FVector& Location,
 	const FVector& Direction,
 	float Intensity,
-	const FVector& WaterVelocity)
+	const FVector& WaterVelocity,
+	float Extent)
 {
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_DedicatedServer)
@@ -169,7 +171,7 @@ bool UOceanVfxSubsystem::RequestBurst(
 		return false;
 	}
 
-	PushUserParams(*Component, Direction, Intensity, WaterVelocity);
+	PushUserParams(*Component, Direction, Intensity, WaterVelocity, Extent);
 
 	BurstCooldowns.Add(SiteKey, Now);
 	++BurstsThisFrame;
@@ -186,7 +188,8 @@ FOceanVfxHandle UOceanVfxSubsystem::UpdateSustained(
 	const FVector& Location,
 	const FVector& Direction,
 	float Intensity,
-	const FVector& WaterVelocity)
+	const FVector& WaterVelocity,
+	float Extent)
 {
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_DedicatedServer ||
@@ -261,7 +264,7 @@ FOceanVfxHandle UOceanVfxSubsystem::UpdateSustained(
 		{
 			Component->SetWorldRotation(Direction.Rotation());
 		}
-		PushUserParams(*Component, Direction, Intensity, WaterVelocity);
+		PushUserParams(*Component, Direction, Intensity, WaterVelocity, Extent);
 	}
 
 	return Handle;
@@ -342,7 +345,8 @@ UNiagaraComponent* UOceanVfxSubsystem::SpawnPooled(
 
 void UOceanVfxSubsystem::PushUserParams(
 	UNiagaraComponent& Component, const FVector& Direction,
-	float Intensity, const FVector& WaterVelocity) const
+	float Intensity, const FVector& WaterVelocity,
+	float Extent) const
 {
 	Component.SetVariableFloat(
 		OceanVfx::IntensityParam, FMath::Clamp(Intensity, 0.0f, 1.0f));
@@ -350,6 +354,8 @@ void UOceanVfxSubsystem::PushUserParams(
 		OceanVfx::ImpactDirectionParam, Direction);
 	Component.SetVariableVec3(
 		OceanVfx::WaterVelocityParam, WaterVelocity);
+	Component.SetVariableFloat(
+		OceanVfx::ExtentParam, FMath::Max(Extent, 0.0f));
 }
 
 void UOceanVfxSubsystem::ReleaseEffectComponent(FSustainedEffect& Effect) const
