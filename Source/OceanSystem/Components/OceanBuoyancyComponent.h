@@ -51,6 +51,28 @@ class UWaveParameterSubsystem;
  * Use GenerateBoxSamplePoints (CallInEditor) to lay out a grid of points
  * on the bottom face of a bounding box, or manually populate SamplePoints.
  */
+ /**
+  * Published per-sample-point state, refreshed every buoyancy tick.
+  * This is the piggyback surface for vessel VFX: the buoyancy pass
+  * already computes all of it, so consumers get hull/water contact
+  * data with zero additional wave queries.
+  *
+  * SurfaceZ is the PHYSICS-LOD water height (broad swell, no detail
+  * chop) — consistent with what the hull physically responds to.
+  * PointVelocity is only populated for submerged points (zero
+  * otherwise); it is valid on the exact frame a point crosses under,
+  * which is what slam detection needs.
+  */
+struct FOceanBuoyancySample
+{
+	FVector WorldLocation = FVector::ZeroVector;
+	FVector PointVelocity = FVector::ZeroVector;
+	float SurfaceZ = 0.0f;
+	float Depth = 0.0f;            // SurfaceZ - PointZ (signed; + = submerged)
+	bool bOverWater = false;
+	bool bSubmerged = false;
+};
+
 UCLASS(ClassGroup = (OceanSystem), meta = (BlueprintSpawnableComponent))
 class OCEANSYSTEM_API UOceanBuoyancyComponent : public UActorComponent
 {
@@ -218,6 +240,21 @@ public:
 		meta = (ClampMin = "1.0", UIMin = "2.0", UIMax = "50.0"))
 	float DebugPointRadius = 8.0f;
 
+	// -------------------------------------------------------------------
+	// Sample state (published for consumers, e.g. vessel VFX)
+	// -------------------------------------------------------------------
+
+	/**
+	 * Per-point state captured during the most recent buoyancy tick,
+	 * index-aligned with SamplePoints. Check GetSampleFrame() against
+	 * GFrameCounter for staleness (the component early-outs when physics
+	 * is disabled, leaving old data behind).
+	 */
+	const TArray<FOceanBuoyancySample>& GetSampleStates() const { return SampleStates; }
+
+	/** GFrameCounter value when SampleStates was last refreshed. */
+	uint64 GetSampleFrame() const { return SampleFrame; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
@@ -235,4 +272,8 @@ private:
 	/** Cached physics body (owner's root primitive). */
 	UPROPERTY(Transient)
 	TObjectPtr<UPrimitiveComponent> PhysicsBody = nullptr;
+
+	/** See GetSampleStates(). */
+	TArray<FOceanBuoyancySample> SampleStates;
+	uint64 SampleFrame = 0;
 };
