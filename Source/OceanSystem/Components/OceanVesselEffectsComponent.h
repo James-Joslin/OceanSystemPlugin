@@ -47,6 +47,16 @@ class UPrimitiveComponent;
  * component (or the whole boat) is destroyed mid-spray, everything
  * tapers out on its own.
  */
+ /** Which local axis the vessel's bow points along. */
+UENUM(BlueprintType)
+enum class EOceanVesselForwardAxis : uint8
+{
+	PlusX  UMETA(DisplayName = "+X"),
+	MinusX UMETA(DisplayName = "-X"),
+	PlusY  UMETA(DisplayName = "+Y"),
+	MinusY UMETA(DisplayName = "-Y")
+};
+
 UCLASS(ClassGroup = (OceanSystem), meta = (BlueprintSpawnableComponent))
 class OCEANSYSTEM_API UOceanVesselEffectsComponent : public UActorComponent
 {
@@ -54,6 +64,16 @@ class OCEANSYSTEM_API UOceanVesselEffectsComponent : public UActorComponent
 
 public:
 	UOceanVesselEffectsComponent();
+
+	/**
+	 * The local axis the bow points along. Everything derives from this:
+	 * bow/stern/port/starboard classification of the buoyancy samples,
+	 * the spray/wake facing directions, and relative-speed measurement.
+	 * Boats modelled to the UE convention keep +X; a hull that sails
+	 * along its local Y sets +Y (or -Y), no mesh changes needed.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vessel Vfx")
+	EOceanVesselForwardAxis ForwardAxis = EOceanVesselForwardAxis::PlusX;
 
 	// -------------------------------------------------------------------
 	// Variant sets (unset = that effect disabled)
@@ -159,6 +179,9 @@ private:
 
 	void ClassifySamplePoints();
 	void ReleaseAllHandles();
+
+	/** Local-space forward unit vector for ForwardAxis. */
+	FVector GetLocalForward() const;
 
 	/** Sustained contact-spray rule shared by bow and sides. */
 	void UpdateContactSpray(

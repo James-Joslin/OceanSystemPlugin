@@ -81,6 +81,17 @@ void UOceanVesselEffectsComponent::ReleaseAllHandles()
 	}
 }
 
+FVector UOceanVesselEffectsComponent::GetLocalForward() const
+{
+	switch (ForwardAxis)
+	{
+	case EOceanVesselForwardAxis::MinusX: return FVector(-1, 0, 0);
+	case EOceanVesselForwardAxis::PlusY:  return FVector(0, 1, 0);
+	case EOceanVesselForwardAxis::MinusY: return FVector(0, -1, 0);
+	default:                              return FVector(1, 0, 0);
+	}
+}
+
 // ===================================================================
 // Sample classification — bow/stern/port/starboard from the layout
 // ===================================================================
@@ -95,14 +106,24 @@ void UOceanVesselEffectsComponent::ClassifySamplePoints()
 		return;
 	}
 
-	float MaxX = -FLT_MAX, MinX = FLT_MAX, MinY = FLT_MAX, MaxY = -FLT_MAX;
+	// Project every point onto the configured forward axis and the
+	// derived right axis (Right = Up x Forward): most-forward = bow,
+	// most-aft = stern, most-right = starboard, most-left = port.
+	// The rest of the component never touches raw X/Y again.
+	const FVector LocalForward = GetLocalForward();
+	const FVector LocalRight =
+		FVector::CrossProduct(FVector::UpVector, LocalForward);
+
+	float MaxFwd = -FLT_MAX, MinFwd = FLT_MAX;
+	float MaxRight = -FLT_MAX, MinRight = FLT_MAX;
 	for (int32 Index = 0; Index < LocalPoints.Num(); ++Index)
 	{
-		const FVector& P = LocalPoints[Index];
-		if (P.X > MaxX) { MaxX = P.X; BowIndex = Index; }
-		if (P.X < MinX) { MinX = P.X; SternIndex = Index; }
-		if (P.Y < MinY) { MinY = P.Y; PortIndex = Index; }
-		if (P.Y > MaxY) { MaxY = P.Y; StarboardIndex = Index; }
+		const float Fwd = FVector::DotProduct(LocalPoints[Index], LocalForward);
+		const float Right = FVector::DotProduct(LocalPoints[Index], LocalRight);
+		if (Fwd > MaxFwd) { MaxFwd = Fwd; BowIndex = Index; }
+		if (Fwd < MinFwd) { MinFwd = Fwd; SternIndex = Index; }
+		if (Right < MinRight) { MinRight = Right; PortIndex = Index; }
+		if (Right > MaxRight) { MaxRight = Right; StarboardIndex = Index; }
 	}
 
 	// Degenerate layouts (e.g. a single row down the centreline): drop
@@ -148,8 +169,13 @@ void UOceanVesselEffectsComponent::TickComponent(
 	}
 
 	const FVector BoatVelocity = PhysicsBody->GetPhysicsLinearVelocity();
-	const FVector Forward =
-		GetOwner()->GetActorForwardVector().GetSafeNormal2D();
+	const FTransform& OwnerTransform = GetOwner()->GetActorTransform();
+	const FVector Forward = OwnerTransform
+		.TransformVectorNoScale(GetLocalForward()).GetSafeNormal2D();
+	const FVector Right = OwnerTransform
+		.TransformVectorNoScale(
+			FVector::CrossProduct(FVector::UpVector, GetLocalForward()))
+		.GetSafeNormal2D();
 
 	// ----- Bow spray (sustained) -----
 	if (BowSpraySet && Samples.IsValidIndex(BowIndex))
@@ -184,15 +210,13 @@ void UOceanVesselEffectsComponent::TickComponent(
 		{
 			const FOceanBuoyancySample& S = Samples[PortIndex];
 			UpdateContactSpray(PortHandle, SideContactSet, S,
-				-GetOwner()->GetActorRightVector(), ForwardSpeed,
-				SideThreshold, 0.7f);
+				-Right, ForwardSpeed, SideThreshold, 0.7f);
 		}
 		if (Samples.IsValidIndex(StarboardIndex))
 		{
 			const FOceanBuoyancySample& S = Samples[StarboardIndex];
 			UpdateContactSpray(StarboardHandle, SideContactSet, S,
-				GetOwner()->GetActorRightVector(), ForwardSpeed,
-				SideThreshold, 0.7f);
+				Right, ForwardSpeed, SideThreshold, 0.7f);
 		}
 	}
 
