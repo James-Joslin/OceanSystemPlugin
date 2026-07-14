@@ -5,17 +5,46 @@
 #include "Components/SplineComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
 #include "Engine/Texture2D.h"
 #include "Misc/App.h"
 
-DECLARE_STATS_GROUP(TEXT("OceanSystem"), STATGROUP_OceanSystem, STATCAT_Advanced);
+// STATGROUP_OceanSystem is declared in Types/OceanTypes.h (shared across the plugin).
 DECLARE_CYCLE_STAT(TEXT("WaveSubsystem Tick"), STAT_WaveSubsystemTick, STATGROUP_OceanSystem);
 DECLARE_CYCLE_STAT(TEXT("WaveSubsystem Eval Physics"), STAT_WaveSubsystemEvalPhysics, STATGROUP_OceanSystem);
 DECLARE_CYCLE_STAT(TEXT("WaveSubsystem Eval Full"), STAT_WaveSubsystemEvalFull, STATGROUP_OceanSystem);
+DECLARE_CYCLE_STAT(TEXT("WaveSubsystem Eval Velocity"), STAT_WaveSubsystemEvalVelocity, STATGROUP_OceanSystem);
 
 // ---------------------------------------------------------------------------
 // MID parameter name cache
 // ---------------------------------------------------------------------------
+
+namespace
+{
+	/** Half-step for the central finite difference in GetWaterVelocity.
+		At 1/240 s the amplitude error is under 0.2% even on the fastest
+		10 cm detail ripples (omega ~ 25 rad/s); the swells that actually
+		drive spray are exact to float precision. */
+	constexpr float GWaveVelocityHalfStep = 1.0f / 240.0f;
+}
+
+// ---------------------------------------------------------------------------
+// D0 verification logging (Ocean.Debug.WaterVelocity console command)
+//
+// Cross-checks GetWaterVelocity against a per-frame finite difference of
+// GetFullWaveHeight at a fixed world point. The Z components should track
+// closely; with a body's TimeScale = 0 both should read ~zero.
+// ---------------------------------------------------------------------------
+namespace OceanVelDebug
+{
+	static bool    bActive = false;
+	static double  Until = 0.0;
+	static FVector Location = FVector::ZeroVector;
+	static float   PrevHeight = 0.0f;
+	static bool    bHavePrev = false;
+}
+
+static void TickWaterVelocityDebug(UWaveParameterSubsystem& Subsystem, const UWorld& World, float DeltaTime);
 
 namespace OceanMID
 {
@@ -84,6 +113,11 @@ void UWaveParameterSubsystem::Tick(float DeltaTime)
 	for (FWaterBodyEntry& Entry : WaterBodies)
 	{
 		SyncMaterialInstance(Entry, WorldTime);
+	}
+
+	if (OceanVelDebug::bActive)
+	{
+		TickWaterVelocityDebug(*this, *World, DeltaTime);
 	}
 }
 
@@ -353,6 +387,45 @@ bool UWaveParameterSubsystem::GetFullWaveHeight(const FVector& WorldPos, float& 
 	const FWaterBodyEntry& Entry = WaterBodies[Query.PrimaryIndex];
 	const FGerstnerResult Result = EvaluateBody(Entry, WorldPos, WorldTime, /*bFullEval=*/true);
 	OutWorldZ = Result.WorldZ;
+	return true;
+}
+
+bool UWaveParameterSubsystem::GetWaterVelocity(const FVector& WorldPos, FVector& OutVelocity)
+{
+	SCOPE_CYCLE_COUNTER(STAT_WaveSubsystemEvalVelocity);
+
+	OutVelocity = FVector::ZeroVector;
+
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	const float WorldTime = World->GetTimeSeconds();
+	const FWaterBodyQueryResult Query = QueryBodiesAt(WorldPos);
+
+	if (!Query.IsValid())
+	{
+		return false;
+	}
+
+	const FWaterBodyEntry& Entry = WaterBodies[Query.PrimaryIndex];
+
+	// Central difference in REAL world time. EvaluateBody applies the
+	// body's TimeScale internally, so d/dt of Disp(P, TimeScale * t) is
+	// captured exactly — including TimeScale = 0 (paused) -> zero velocity.
+	// Two evaluations per query; VFX consumers issue tens per frame at
+	// most, negligible next to buoyancy's per-pontoon load.
+	const FGerstnerResult Before = EvaluateBody(
+		Entry, WorldPos, WorldTime - GWaveVelocityHalfStep, /*bFullEval=*/true);
+	const FGerstnerResult After = EvaluateBody(
+		Entry, WorldPos, WorldTime + GWaveVelocityHalfStep, /*bFullEval=*/true);
+
+	OutVelocity =
+		(After.Displacement - Before.Displacement)
+		/ (2.0f * GWaveVelocityHalfStep);
+
 	return true;
 }
 
@@ -887,3 +960,83 @@ void UWaveParameterSubsystem::UpdateWaveDataTexture(
 	Mip.BulkData.Unlock();
 	Texture->UpdateResource();
 }
+// ===================================================================
+// Debug: Ocean.Debug.WaterVelocity
+// ===================================================================
+
+static void TickWaterVelocityDebug(UWaveParameterSubsystem& Subsystem, const UWorld& World, float DeltaTime)
+{
+	using namespace OceanVelDebug;
+
+	if (World.GetTimeSeconds() > Until)
+	{
+		bActive = false;
+		bHavePrev = false;
+		UE_LOG(LogTemp, Log, TEXT("OceanVelDebug: done."));
+		return;
+	}
+
+	float Height = 0.0f;
+	FVector Velocity = FVector::ZeroVector;
+	const bool bHeightOk = Subsystem.GetFullWaveHeight(Location, Height);
+	const bool bVelOk = Subsystem.GetWaterVelocity(Location, Velocity);
+
+	if (!bHeightOk || !bVelOk)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("OceanVelDebug: point (%.0f, %.0f) is over no water body."),
+			Location.X, Location.Y);
+		bActive = false;
+		bHavePrev = false;
+		return;
+	}
+
+	if (bHavePrev && DeltaTime > KINDA_SMALL_NUMBER)
+	{
+		const float FiniteDiffZ = (Height - PrevHeight) / DeltaTime;
+		UE_LOG(LogTemp, Log,
+			TEXT("OceanVelDebug: VelZ = %8.1f cm/s | FD(Height) = %8.1f cm/s | diff = %6.1f | H = %.1f"),
+			Velocity.Z, FiniteDiffZ, Velocity.Z - FiniteDiffZ, Height);
+	}
+
+	PrevHeight = Height;
+	bHavePrev = true;
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GOceanDebugWaterVelocityCmd(
+	TEXT("Ocean.Debug.WaterVelocity"),
+	TEXT("Log GetWaterVelocity vs finite-difference of GetFullWaveHeight at a fixed point 5m ahead of the camera. Args: [Seconds=5]"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			if (!World || !World->GetSubsystem<UWaveParameterSubsystem>())
+			{
+				return;
+			}
+
+			const APlayerCameraManager* PCM =
+				UGameplayStatics::GetPlayerCameraManager(World, 0);
+			if (!PCM)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("Ocean.Debug.WaterVelocity: no player camera (run in PIE)."));
+				return;
+			}
+
+			const float Seconds =
+				Args.Num() > 0 ? FMath::Max(FCString::Atof(*Args[0]), 0.5f) : 5.0f;
+
+			// Fixed point: 5 m ahead of the camera, flattened to XY —
+			// height/velocity queries only use XY anyway.
+			FVector Point = PCM->GetCameraLocation()
+				+ PCM->GetCameraRotation().Vector() * 500.0f;
+
+			OceanVelDebug::Location = Point;
+			OceanVelDebug::Until = World->GetTimeSeconds() + Seconds;
+			OceanVelDebug::bHavePrev = false;
+			OceanVelDebug::bActive = true;
+
+			UE_LOG(LogTemp, Log,
+				TEXT("Ocean.Debug.WaterVelocity: logging at (%.0f, %.0f) for %.1fs."),
+				Point.X, Point.Y, Seconds);
+		}));
