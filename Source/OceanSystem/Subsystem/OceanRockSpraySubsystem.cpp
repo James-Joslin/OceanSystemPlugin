@@ -19,6 +19,9 @@ DECLARE_CYCLE_STAT(TEXT("RockSpray Scan"), STAT_RockSprayScan, STATGROUP_OceanSy
 
 namespace OceanRockSpray
 {
+	/** Ocean.Vfx.Rocks.Verbose — per-crossing decision logging. */
+	static bool bVerbose = false;
+
 	/** Spatial grid cell size (cm). ~25 m — a handful of cells cover the
 		active radius, each holding a modest index list. */
 	static constexpr double GridCellSize = 2500.0;
@@ -48,14 +51,36 @@ void UOceanRockSpraySubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		VariantSet = Settings->RockImpactVariantSet.LoadSynchronous();
 	}
 
-	RescanSprayPoints();
+	// Registration-driven rescans: any body arriving or leaving (streamed
+	// sublevels, runtime spawns) marks the point list stale. The flag is
+	// consumed on the next tick, so a burst of registrations coalesces
+	// into one rescan.
+	if (UWaveParameterSubsystem* Wave = InWorld.GetSubsystem<UWaveParameterSubsystem>())
+	{
+		Wave->OnWaterBodiesChanged.AddUObject(
+			this, &UOceanRockSpraySubsystem::NotifySprayPointsDirty);
+	}
+
+	bRescanPending = true; // initial scan, first tick
+}
+
+void UOceanRockSpraySubsystem::Deinitialize()
+{
+	if (UWorld* World = GetWorld())
+	{
+		if (UWaveParameterSubsystem* Wave = World->GetSubsystem<UWaveParameterSubsystem>())
+		{
+			Wave->OnWaterBodiesChanged.RemoveAll(this);
+		}
+	}
+	Super::Deinitialize();
 }
 
 bool UOceanRockSpraySubsystem::IsTickable() const
 {
-	// Nothing to do without points and a variant set; also keeps the
-	// editor preview world quiet (scan only runs at game begin-play).
-	return bScanned && Points.Num() > 0 && VariantSet != nullptr;
+	// Tick while there's a pending rescan to perform or points to
+	// evaluate; idle otherwise (and always idle without a variant set).
+	return VariantSet != nullptr && (bRescanPending || Points.Num() > 0);
 }
 
 TStatId UOceanRockSpraySubsystem::GetStatId() const
@@ -73,7 +98,7 @@ void UOceanRockSpraySubsystem::RescanSprayPoints()
 
 	Points.Reset();
 	Grid.Reset();
-	bScanned = true;
+	bRescanPending = false;
 
 	UWorld* World = GetWorld();
 	if (!World)
@@ -122,19 +147,28 @@ void UOceanRockSpraySubsystem::RescanSprayPoints()
 			return Cached;
 		};
 
+	// Diagnostic counters for the scan summary log.
+	int32 NumComponentsWithSockets = 0;
+	int32 NumCandidates = 0;
+	int32 NumRejectedNoWater = 0;
+	int32 NumRejectedMargin = 0;
+
 	// Accepts a world-space candidate; pre-filters against the water.
 	auto TryAddPoint = [&](const FTransform& SocketWorld, float IntensityMul)
 		{
+			++NumCandidates;
 			const FVector Location = SocketWorld.GetLocation();
 
 			float SurfaceZ = 0.0f;
 			if (!Wave->GetFullWaveHeight(Location, SurfaceZ))
 			{
-				return; // not over any water body
+				++NumRejectedNoWater; // not over any water body
+				return;
 			}
 			if (FMath::Abs(Location.Z - SurfaceZ) > Margin)
 			{
-				return; // cliff-top / seabed socket — never in the splash band
+				++NumRejectedMargin; // cliff-top / seabed — never in the splash band
+				return;
 			}
 
 			FSprayPoint& Point = Points.AddDefaulted_GetRef();
@@ -160,6 +194,7 @@ void UOceanRockSpraySubsystem::RescanSprayPoints()
 		{
 			continue;
 		}
+		++NumComponentsWithSockets;
 
 		if (const UInstancedStaticMeshComponent* Ism =
 			Cast<UInstancedStaticMeshComponent>(Component))
@@ -195,8 +230,11 @@ void UOceanRockSpraySubsystem::RescanSprayPoints()
 	}
 
 	UE_LOG(LogTemp, Log,
-		TEXT("OceanRockSpray: scan kept %d spray points in %d grid cells."),
-		Points.Num(), Grid.Num());
+		TEXT("OceanRockSpray: scan kept %d spray points in %d grid cells "
+			"(%d components had '%s' sockets, %d candidate points, "
+			"%d rejected: not over water, %d rejected: outside vertical margin)."),
+		Points.Num(), Grid.Num(), NumComponentsWithSockets, *Prefix,
+		NumCandidates, NumRejectedNoWater, NumRejectedMargin);
 }
 
 // ===================================================================
@@ -219,6 +257,17 @@ void UOceanRockSpraySubsystem::Tick(float DeltaTime)
 	if (!Wave || !Vfx || !VariantSet)
 	{
 		return;
+	}
+
+	// Consume a pending rescan (body registered/unregistered, PCG regen
+	// notified, or the initial begin-play scan).
+	if (bRescanPending)
+	{
+		RescanSprayPoints();
+		if (Points.Num() == 0)
+		{
+			return;
+		}
 	}
 
 	const APlayerCameraManager* PCM =
@@ -257,6 +306,18 @@ void UOceanRockSpraySubsystem::Tick(float DeltaTime)
 			Point.PrevSurfaceZ < Point.Location.Z &&
 			SurfaceZ >= Point.Location.Z;
 
+		if (OceanRockSpray::bVerbose && Point.bHavePrev && !bCrossedUp)
+		{
+			// Throttled "why not": one line per point per second showing
+			// where the surface sits relative to the point.
+			if (FMath::Fmod(Now, 1.0) < DeltaTime)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("RockSpray[%d]: no crossing (surface Z %.1f vs point Z %.1f, prev %.1f)"),
+					Index, SurfaceZ, Point.Location.Z, Point.PrevSurfaceZ);
+			}
+		}
+
 		if (bCrossedUp)
 		{
 			// Crossing speed from the same height signal that detected
@@ -287,10 +348,30 @@ void UOceanRockSpraySubsystem::Tick(float DeltaTime)
 
 					// Cooldowns, range, per-frame cap: all the VFX
 					// subsystem's problem. Rejection = "not this time".
-					Vfx->RequestBurst(
+					const bool bFired = Vfx->RequestBurst(
 						VariantSet, Point.Location, Point.Normal,
 						Intensity, WaterVelocity);
+
+					if (OceanRockSpray::bVerbose)
+					{
+						UE_LOG(LogTemp, Log,
+							TEXT("RockSpray[%d]: CROSSING speed %.1f, intoFace %.1f, intensity %.2f -> %s"),
+							Index, CrossingSpeed, IntoFace, Intensity,
+							bFired ? TEXT("FIRED") : TEXT("rejected by VFX subsystem (range/cooldown/cap)"));
+					}
 				}
+				else if (OceanRockSpray::bVerbose)
+				{
+					UE_LOG(LogTemp, Log,
+						TEXT("RockSpray[%d]: crossing rejected — water moving away from face (intoFace %.1f)"),
+						Index, IntoFace);
+				}
+			}
+			else if (OceanRockSpray::bVerbose)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("RockSpray[%d]: crossing too slow (%.1f < min %.1f)"),
+					Index, CrossingSpeed, Settings->MinCrossingSpeed);
 			}
 		}
 
@@ -310,6 +391,32 @@ void UOceanRockSpraySubsystem::GatherPointsInRadius(
 	const float RadiusSq = Radius * Radius;
 	const FIntPoint MinCell = MakeCell(Center - FVector(Radius, Radius, 0.0));
 	const FIntPoint MaxCell = MakeCell(Center + FVector(Radius, Radius, 0.0));
+
+	// If the search rectangle spans more cell coordinates than cells that
+	// actually exist, sweep the occupied cells instead — a huge radius over
+	// a sparse grid must not degenerate into millions of empty map lookups.
+	const int64 CellsInRect =
+		static_cast<int64>(MaxCell.X - MinCell.X + 1) *
+		static_cast<int64>(MaxCell.Y - MinCell.Y + 1);
+	if (CellsInRect > Grid.Num())
+	{
+		for (const auto& Pair : Grid)
+		{
+			if (Pair.Key.X < MinCell.X || Pair.Key.X > MaxCell.X ||
+				Pair.Key.Y < MinCell.Y || Pair.Key.Y > MaxCell.Y)
+			{
+				continue;
+			}
+			for (const int32 Index : Pair.Value)
+			{
+				if (FVector::DistSquared2D(Points[Index].Location, Center) <= RadiusSq)
+				{
+					OutIndices.Add(Index);
+				}
+			}
+		}
+		return;
+	}
 
 	for (int32 X = MinCell.X; X <= MaxCell.X; ++X)
 	{
@@ -389,6 +496,16 @@ public:
 		}
 	}
 };
+
+static FAutoConsoleCommand GOceanRocksVerboseCmd(
+	TEXT("Ocean.Vfx.Rocks.Verbose"),
+	TEXT("Toggle per-crossing decision logging for rock spray."),
+	FConsoleCommandDelegate::CreateLambda([]()
+		{
+			OceanRockSpray::bVerbose = !OceanRockSpray::bVerbose;
+			UE_LOG(LogTemp, Log, TEXT("OceanRockSpray: verbose %s"),
+				OceanRockSpray::bVerbose ? TEXT("ON") : TEXT("OFF"));
+		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GOceanRocksRescanCmd(
 	TEXT("Ocean.Vfx.Rocks.Rescan"),

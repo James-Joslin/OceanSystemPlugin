@@ -88,6 +88,13 @@ public:
 	void RegisterWaterBody(const FWaterBodyEntry& Entry);
 
 	/**
+	 * Fires whenever a water body registers or unregisters (streamed
+	 * sublevels, runtime-spawned bodies). Consumers holding cached
+	 * water-dependent data (e.g. rock spray points) should mark it dirty.
+	 */
+	FSimpleMulticastDelegate OnWaterBodiesChanged;
+
+	/**
 	 * Remove a water body from the registry. Cleans up any blend zones
 	 * referencing the body.
 	 */

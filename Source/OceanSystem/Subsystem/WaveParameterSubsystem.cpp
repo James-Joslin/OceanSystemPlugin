@@ -151,6 +151,8 @@ void UWaveParameterSubsystem::RegisterWaterBody(const FWaterBodyEntry& Entry)
 	{
 		DetectBlendZones(SortedIndex);
 	}
+
+	OnWaterBodiesChanged.Broadcast();
 }
 
 void UWaveParameterSubsystem::UnregisterWaterBody(const UOceanBodyComponent* Body)
@@ -169,6 +171,8 @@ void UWaveParameterSubsystem::UnregisterWaterBody(const UOceanBodyComponent* Bod
 		// RemoveAtSwap may invalidate ordering; re-sort
 		SortRegistryByPriority();
 	}
+
+	OnWaterBodiesChanged.Broadcast();
 }
 
 void UWaveParameterSubsystem::UpdateWaterBodyConfig(

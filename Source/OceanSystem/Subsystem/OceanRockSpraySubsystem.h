@@ -46,9 +46,19 @@ class OCEANSYSTEM_API UOceanRockSpraySubsystem : public UTickableWorldSubsystem
 public:
 	// --- UTickableWorldSubsystem ---
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+	virtual void Deinitialize() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 	virtual bool IsTickable() const override;
+
+	/**
+	 * Mark the spray point list stale; it rebuilds on the next tick
+	 * (multiple calls in one frame coalesce into one rescan). Called
+	 * automatically when water bodies register/unregister. Call from
+	 * Blueprint/code after runtime PCG rock generation completes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Ocean|Vfx")
+	void NotifySprayPointsDirty() { bRescanPending = true; }
 
 	/**
 	 * Rebuild the spray point list from the current world. Called
@@ -88,7 +98,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UOceanVfxVariantSet> VariantSet;
 
-	bool bScanned = false;
+	bool bRescanPending = false;
 
 	void GatherPointsInRadius(
 		const FVector& Center, float Radius,
