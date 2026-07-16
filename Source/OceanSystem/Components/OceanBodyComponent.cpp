@@ -3,6 +3,7 @@
 #include "OceanBodyComponent.h"
 #include "TiledWaterMeshComponent.h"
 #include "../Subsystem/WaveParameterSubsystem.h"
+#include "../Subsystem/ShipWaveMaskSubsystem.h"
 #include "Components/SplineComponent.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -122,6 +123,17 @@ void UOceanBodyComponent::InitializeWaterBody()
 	FWaterBodyEntry Entry = BuildRegistryEntry();
 	Subsystem->RegisterWaterBody(Entry);
 
+	// Register this body's unique MID and XY coverage with the visual
+	// ship-wave mask system. Rivers are ignored by that subsystem.
+	if (UShipWaveMaskSubsystem* ShipMaskSubsystem =
+		World->GetSubsystem<UShipWaveMaskSubsystem>())
+	{
+		ShipMaskSubsystem->RegisterWaterBody(
+			this,
+			MaterialInstance,
+			ShipWaveMaskResolution);
+	}
+
 	// Remember where we registered so OnUpdateTransform can detect
 	// genuine Z changes and re-register.
 	LastRegisteredZ = GetComponentLocation().Z;
@@ -146,9 +158,16 @@ void UOceanBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (UWorld* World = GetWorld())
 	{
-		if (UWaveParameterSubsystem* Subsystem = World->GetSubsystem<UWaveParameterSubsystem>())
+		if (UWaveParameterSubsystem* Subsystem =
+			World->GetSubsystem<UWaveParameterSubsystem>())
 		{
 			Subsystem->UnregisterWaterBody(this);
+		}
+
+		if (UShipWaveMaskSubsystem* ShipMaskSubsystem =
+			World->GetSubsystem<UShipWaveMaskSubsystem>())
+		{
+			ShipMaskSubsystem->UnregisterWaterBody(this);
 		}
 	}
 
@@ -244,12 +263,23 @@ void UOceanBodyComponent::PostEditChangeProperty(
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, DomainWarpFrequency)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, DomainWarpAmount)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, CrestSharpness)
-		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, BlendWidth))
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, BlendWidth)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UOceanBodyComponent, ShipWaveMaskResolution))
 	{
 		if (Subsystem)
 		{
 			Subsystem->UnregisterWaterBody(this);
 			Subsystem->RegisterWaterBody(BuildRegistryEntry());
+		}
+
+		if (UShipWaveMaskSubsystem* ShipMaskSubsystem = World
+			? World->GetSubsystem<UShipWaveMaskSubsystem>()
+			: nullptr)
+		{
+			ShipMaskSubsystem->RegisterWaterBody(
+				this,
+				MaterialInstance,
+				ShipWaveMaskResolution);
 		}
 	}
 

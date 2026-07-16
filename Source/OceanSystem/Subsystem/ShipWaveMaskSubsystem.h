@@ -1,5 +1,4 @@
-// ShipWaveMaskSubsystem.h
-// Shared world-space render target containing all active ship proxy gradients.
+// Copyright James Joslin. All Rights Reserved.
 
 #pragma once
 
@@ -9,69 +8,101 @@
 
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
+class UOceanBodyComponent;
 class UShipWaveExclusionComponent;
 class UTextureRenderTarget2D;
 
+USTRUCT()
+struct FShipWaveBodyMaskContext
+{
+	GENERATED_BODY()
+
+public:
+
+	UPROPERTY(Transient)
+	TObjectPtr<UOceanBodyComponent> WaterBody = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> OceanMID = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> MaskRenderTarget = nullptr;
+
+	FVector2D WorldOrigin = FVector2D::ZeroVector;
+	FVector2D WorldSize = FVector2D(100.0f, 100.0f);
+	float BaseZ = 0.0f;
+	int32 Resolution = 512;
+};
+
+/**
+ * Maintains one shared ship-wave mask render target PER tiled water body.
+ *
+ * This prevents ships on vertically stacked/overlapping lakes or oceans
+ * from affecting each other. Every tile and LOD section belonging to one
+ * body samples that body's single render target through its shared MID.
+ *
+ * River bodies are deliberately ignored.
+ */
 UCLASS()
 class OCEANSYSTEM_API UShipWaveMaskSubsystem : public UTickableWorldSubsystem
 {
-    GENERATED_BODY()
+	GENERATED_BODY()
 
 public:
-    UShipWaveMaskSubsystem();
+	UShipWaveMaskSubsystem();
 
-    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
-    virtual void Deinitialize() override;
-    virtual void Tick(float DeltaTime) override;
-    virtual TStatId GetStatId() const override;
-    virtual bool IsTickableInEditor() const override { return false; }
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
+	virtual void Tick(float DeltaTime) override;
+	virtual TStatId GetStatId() const override;
+	virtual bool IsTickableInEditor() const override { return false; }
 
-    /**
-     * Must be called once after BeginPlay, normally by the ocean actor.
-     * StampMaterial is the additive full-screen proxy-stamp material.
-     */
-    UFUNCTION(BlueprintCallable, Category = "Ocean|Ship Wave Mask")
-    void Configure(
-        UMaterialInterface* StampMaterial,
-        int32 Resolution = 512,
-        FVector2D WorldSize = FVector2D(100000.0f, 100000.0f));
+	/**
+	 * Configure the common proxy stamp material. Call once at runtime.
+	 * Water bodies may register before or after this call.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Ocean|Ship Wave Mask")
+	void Configure(
+		UMaterialInterface* StampMaterial,
+		int32 DefaultResolution = 512);
 
-    /** Optional explicit centre. When automatic centring is enabled this is overwritten. */
-    UFUNCTION(BlueprintCallable, Category = "Ocean|Ship Wave Mask")
-    void SetMaskCenter(FVector2D NewCenter);
+	UFUNCTION(BlueprintPure, Category = "Ocean|Ship Wave Mask")
+	bool IsConfigured() const { return StampMID != nullptr; }
 
-    UFUNCTION(BlueprintCallable, Category = "Ocean|Ship Wave Mask")
-    void SetFollowPlayerCamera(bool bEnable) { bFollowPlayerCamera = bEnable; }
+	/**
+	 * Register one non-river water body and its unique MID.
+	 * The subsystem creates one RT covering that body's Extent.
+	 */
+	void RegisterWaterBody(
+		UOceanBodyComponent* WaterBody,
+		UMaterialInstanceDynamic* OceanMID,
+		int32 Resolution = 0);
 
-    /** Push texture and mapping values into the ocean MID. Call once; subsystem refreshes it. */
-    UFUNCTION(BlueprintCallable, Category = "Ocean|Ship Wave Mask")
-    void BindOceanMID(UMaterialInstanceDynamic* OceanMID);
+	void UnregisterWaterBody(UOceanBodyComponent* WaterBody);
 
-    UFUNCTION(BlueprintPure, Category = "Ocean|Ship Wave Mask")
-    UTextureRenderTarget2D* GetMaskRenderTarget() const { return MaskRenderTarget; }
-
-    void RegisterProxy(UShipWaveExclusionComponent* Proxy);
-    void UnregisterProxy(UShipWaveExclusionComponent* Proxy);
+	void RegisterProxy(UShipWaveExclusionComponent* Proxy);
+	void UnregisterProxy(UShipWaveExclusionComponent* Proxy);
 
 private:
-    void RebuildMask();
-    void RefreshBoundMIDs();
+	void EnsureContextResources(FShipWaveBodyMaskContext& Context);
+	void UpdateContextMapping(FShipWaveBodyMaskContext& Context);
+	void RebuildBodyMask(FShipWaveBodyMaskContext& Context);
+	void PushContextToMID(FShipWaveBodyMaskContext& Context);
 
-    UPROPERTY(Transient)
-    TObjectPtr<UTextureRenderTarget2D> MaskRenderTarget = nullptr;
+	UOceanBodyComponent* ResolveWaterBodyForProxy(
+		const UShipWaveExclusionComponent* Proxy) const;
 
-    UPROPERTY(Transient)
-    TObjectPtr<UMaterialInstanceDynamic> StampMID = nullptr;
+	bool IsProxyInsideBodyXY(
+		const UShipWaveExclusionComponent* Proxy,
+		const UOceanBodyComponent* Body) const;
 
-    UPROPERTY(Transient)
-    TArray<TObjectPtr<UMaterialInstanceDynamic>> BoundOceanMIDs;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> StampMID = nullptr;
 
-    TSet<TWeakObjectPtr<UShipWaveExclusionComponent>> Proxies;
+	UPROPERTY(Transient)
+	TMap<TObjectPtr<UOceanBodyComponent>, FShipWaveBodyMaskContext> BodyContexts;
 
-    FVector2D MaskCenter = FVector2D::ZeroVector;
-    FVector2D MaskWorldSize = FVector2D(100000.0f, 100000.0f);
-    int32 MaskResolution = 512;
+	TSet<TWeakObjectPtr<UShipWaveExclusionComponent>> Proxies;
 
-    bool bConfigured = false;
-    bool bFollowPlayerCamera = true;
+	int32 DefaultMaskResolution = 512;
 };

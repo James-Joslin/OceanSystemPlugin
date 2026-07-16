@@ -49,6 +49,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Material")
 	TSoftObjectPtr<UMaterialInterface> BaseMaterial;
 
+
+	/**
+	 * Resolution of this tiled body's ship-wave mask render target.
+	 * Only used for Ocean/Lake bodies. The texture covers Extent exactly.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Material",
+		meta = (EditCondition = "BodyType != EOceanBodyType::River",
+			ClampMin = "64", ClampMax = "4096", UIMin = "128", UIMax = "1024"))
+	int32 ShipWaveMaskResolution = 512;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Blending",
 		meta = (ClampMin = "0.0", UIMin = "50.0", UIMax = "1000.0"))
 	float BlendWidth = 200.0f;
