@@ -55,6 +55,18 @@ void UShipWaveMaskSubsystem::Configure(
 		UpdateContextMapping(Pair.Value);
 		PushContextToMID(Pair.Value);
 	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT(
+			"ShipWaveMask: Configured | StampMaterial=%s | "
+			"DefaultResolution=%d | RegisteredBodies=%d"
+		),
+		*GetNameSafe(StampMaterial),
+		DefaultMaskResolution,
+		BodyContexts.Num()
+	);
 }
 
 void UShipWaveMaskSubsystem::RegisterWaterBody(
@@ -86,6 +98,27 @@ void UShipWaveMaskSubsystem::RegisterWaterBody(
 	UpdateContextMapping(Context);
 	EnsureContextResources(Context);
 	PushContextToMID(Context);
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT(
+			"ShipWaveMask: Registered body | "
+			"Actor=%s | Component=%s | MID=%s | "
+			"Extent=(%.0f, %.0f) | WorldSize=(%.0f, %.0f) | "
+			"Resolution=%d | RT=%s | Configured=%s"
+		),
+		*GetNameSafe(WaterBody->GetOwner()),
+		*GetNameSafe(WaterBody),
+		*GetNameSafe(OceanMID),
+		WaterBody->Extent.X,
+		WaterBody->Extent.Y,
+		Context.WorldSize.X,
+		Context.WorldSize.Y,
+		Context.Resolution,
+		*GetNameSafe(Context.MaskRenderTarget),
+		StampMID ? TEXT("Yes") : TEXT("No")
+	);
 }
 
 void UShipWaveMaskSubsystem::UnregisterWaterBody(

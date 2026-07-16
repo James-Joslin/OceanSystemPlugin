@@ -132,6 +132,35 @@ void UOceanBodyComponent::InitializeWaterBody()
 			this,
 			MaterialInstance,
 			ShipWaveMaskResolution);
+
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT(
+				"ShipWaveMask registration requested: "
+				"Owner=%s | Component=%s | Type=%d | "
+				"MID=%s | Extent=(%.0f, %.0f) | "
+				"WorldSize=(%.0f, %.0f) | Resolution=%d"
+			),
+			*OwnerName,
+			*GetNameSafe(this),
+			static_cast<int32>(BodyType),
+			*GetNameSafe(MaterialInstance),
+			Extent.X,
+			Extent.Y,
+			Extent.X * 2.0,
+			Extent.Y * 2.0,
+			ShipWaveMaskResolution
+		);
+	}
+	else
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("ShipWaveMask subsystem was unavailable for '%s'."),
+			*OwnerName
+		);
 	}
 
 	// Remember where we registered so OnUpdateTransform can detect
