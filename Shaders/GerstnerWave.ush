@@ -38,6 +38,7 @@
 #ifndef GERSTNER_WAVE_USH
 #define GERSTNER_WAVE_USH
 
+static const float GERSTNER_PI = 3.14159265359f;
 static const float GERSTNER_TWO_PI = 6.28318530718f;
 
 
@@ -99,11 +100,16 @@ float OceanFoamNoise2D(float2 P)
  *   Sharpness = 1.5: noticeable peak sharpening
  *   Sharpness = 2.5: very peaked crests, flat troughs
  */
+float SharpenSineMean(float Sharpness)
+{
+    return 2.0f / sqrt(GERSTNER_PI * (Sharpness + 0.267f)) - 1.0f;
+}
+
 float SharpenSine(float SinValue, float Sharpness)
 {
     float Mapped = SinValue * 0.5f + 0.5f;
     float Sharp = pow(Mapped, Sharpness);
-    return Sharp * 2.0f - 1.0f;
+    return (Sharp * 2.0f - 1.0f) - SharpenSineMean(Sharpness);
 }
 
 /**
@@ -292,12 +298,14 @@ void EvaluateGerstnerDisplacementVisual(
     float SmallWaveChop,
     float CrestSharpness,
     float MaxHorizontal,
+    float WaveFade,
     out float3 Displacement)
 {
     float3 TotalDisp = float3(0.0f, 0.0f, 0.0f);
 
     int Count = clamp(WaveCount, 0, 16);
     float MaxWL = WaveData.Load(int3(0, 0, 0)).g;
+    WaveFade = saturate(WaveFade);
 
     [loop]
     for (int i = 0; i < Count; i++)
@@ -306,6 +314,7 @@ void EvaluateGerstnerDisplacementVisual(
         float4 dir = WaveData.Load(int3(i, 1, 0));
 
         float A = wave.r;
+        float VisualA = A * WaveFade;
         float WL = max(wave.g, 0.01f);
         float Q = wave.b;
         float Spd = wave.a;
@@ -321,12 +330,12 @@ void EvaluateGerstnerDisplacementVisual(
         float t = 1.0f - saturate(WL / max(MaxWL, 1.0f));
         float Chop = Choppiness * lerp(1.0f, SmallWaveChop, t * t);
 
-        TotalDisp.x += Chop * Q * A * D.x * cosTheta;
-        TotalDisp.y += Chop * Q * A * D.y * cosTheta;
-        TotalDisp.z += A * SharpenSine(sinTheta, CrestSharpness);
+        TotalDisp.x += Chop * Q * VisualA * D.x * cosTheta;
+        TotalDisp.y += Chop * Q * VisualA * D.y * cosTheta;
+        TotalDisp.z += VisualA * SharpenSine(sinTheta, CrestSharpness);
     }
 
-    Displacement = ClampHorizontalDisplacement(TotalDisp, MaxHorizontal);
+    Displacement = ClampHorizontalDisplacement(TotalDisp, MaxHorizontal * WaveFade);
 }
 
 
@@ -400,6 +409,7 @@ void EvaluateGerstnerNormalVisual(
     int WaveCount,
     Texture2D WaveData,
     float CrestSharpness,
+    float WaveFade,
     out float3 Normal,
     out float FoamMask)
 {
@@ -409,6 +419,7 @@ void EvaluateGerstnerNormalVisual(
     float JacobianSum = 0.0f;
 
     int Count = clamp(WaveCount, 0, 16);
+    WaveFade = saturate(WaveFade);
 
     [loop]
     for (int i = 0; i < Count; i++)
@@ -429,7 +440,7 @@ void EvaluateGerstnerNormalVisual(
         float sinTheta, cosTheta;
         sincos(theta, sinTheta, cosTheta);
 
-        float kA = k * A;
+        float kA = k * A * WaveFade;
         float SharpDeriv = SharpenSineDerivative(sinTheta, cosTheta, CrestSharpness);
 
         NormX -= D.x * kA * cosTheta;
@@ -440,7 +451,7 @@ void EvaluateGerstnerNormalVisual(
     }
 
     Normal = normalize(float3(NormX, NormY, NormZ));
-    FoamMask = saturate(JacobianSum);
+    FoamMask = saturate(JacobianSum) * WaveFade;
 }
 
 
