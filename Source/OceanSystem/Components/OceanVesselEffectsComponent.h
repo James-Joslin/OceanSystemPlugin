@@ -95,6 +95,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vessel Vfx")
 	TObjectPtr<UOceanVfxVariantSet> WakeSet;
 
+	/**
+	 * Burst fired when an authored hull spray socket enters the water
+	 * (FINITE systems). Sockets are authored on the hull's static mesh
+	 * with the same convention as rocks: name starts with the project
+	 * SpraySocketPrefix ("Spray_"), X-axis points out of the hull,
+	 * relative scale X = intensity multiplier. Unlike rock sockets these
+	 * are resolved through the live component transform every tick, so
+	 * they ride the hull. Unset = feature off.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vessel Vfx")
+	TObjectPtr<UOceanVfxVariantSet> HullSpraySet;
+
 	// -------------------------------------------------------------------
 	// Tuning
 	// -------------------------------------------------------------------
@@ -126,6 +138,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vessel Vfx",
 		meta = (ClampMin = "1.0"))
 	float SlamFullIntensitySpeed = 900.0f;
+
+	/** Minimum water-entry closure speed (cm/s) for a hull socket burst —
+		how fast the surface and the socket are approaching each other
+		(covers both the hull dropping and a wave rising). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vessel Vfx",
+		meta = (ClampMin = "0.0"))
+	float HullSprayMinSpeed = 100.0f;
+
+	/** Closure speed mapped to hull-socket Intensity = 1. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vessel Vfx",
+		meta = (ClampMin = "1.0"))
+	float HullSprayFullSpeed = 500.0f;
 
 	/** Boat speed (cm/s) below which the wake shuts off. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vessel Vfx",
@@ -176,6 +200,22 @@ private:
 
 	/** Previous-frame submerged flags, index-aligned with samples. */
 	TArray<bool> PrevSubmerged;
+
+	/** One authored hull spray socket (rides the mesh component). */
+	struct FHullSprayPoint
+	{
+		FName SocketName;
+		float IntensityMul = 1.0f;
+		float PrevDepth = 0.0f;
+		bool bHavePrev = false;
+	};
+	TArray<FHullSprayPoint> HullSprayPoints;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> HullMesh;
+
+	void GatherHullSpraySockets();
+	void TickHullSpraySockets(float DeltaTime);
 
 	void ClassifySamplePoints();
 	void ReleaseAllHandles();

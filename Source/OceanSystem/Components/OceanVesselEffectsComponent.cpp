@@ -2,6 +2,10 @@
 
 #include "OceanVesselEffectsComponent.h"
 #include "OceanBuoyancyComponent.h"
+#include "../Subsystem/OceanVfxSettings.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshSocket.h"
 #include "../Subsystem/WaveParameterSubsystem.h"
 #include "../Types/OceanTypes.h" // STATGROUP_OceanSystem
 #include "Components/PrimitiveComponent.h"
@@ -60,6 +64,7 @@ void UOceanVesselEffectsComponent::BeginPlay()
 	AddTickPrerequisiteComponent(Buoyancy);
 
 	ClassifySamplePoints();
+	GatherHullSpraySockets();
 }
 
 void UOceanVesselEffectsComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -136,6 +141,105 @@ void UOceanVesselEffectsComponent::ClassifySamplePoints()
 		StarboardIndex == PortIndex)
 	{
 		StarboardIndex = INDEX_NONE;
+	}
+}
+
+// ===================================================================
+// Hull spray sockets — authored points that ride the hull
+// ===================================================================
+
+void UOceanVesselEffectsComponent::GatherHullSpraySockets()
+{
+	HullSprayPoints.Reset();
+	HullMesh = nullptr;
+
+	AActor* Owner = GetOwner();
+	if (!Owner)
+	{
+		return;
+	}
+
+	// Prefer a static mesh root (the usual physics hull); fall back to
+	// the first static mesh component on the actor.
+	HullMesh = Cast<UStaticMeshComponent>(Owner->GetRootComponent());
+	if (!HullMesh)
+	{
+		HullMesh = Owner->FindComponentByClass<UStaticMeshComponent>();
+	}
+	if (!HullMesh || !HullMesh->GetStaticMesh())
+	{
+		return;
+	}
+
+	// Same authoring convention as rock spray, same settings prefix.
+	const FString Prefix =
+		GetDefault<UOceanVfxSettings>()->SpraySocketPrefix;
+
+	for (const UStaticMeshSocket* Socket : HullMesh->GetStaticMesh()->Sockets)
+	{
+		if (Socket && Socket->SocketName.ToString().StartsWith(Prefix))
+		{
+			FHullSprayPoint& Point = HullSprayPoints.AddDefaulted_GetRef();
+			Point.SocketName = Socket->SocketName;
+			Point.IntensityMul = FMath::Max(Socket->RelativeScale.X, 0.0f);
+		}
+	}
+
+	if (HullSprayPoints.Num() > 0)
+	{
+		UE_LOG(LogTemp, Log,
+			TEXT("VesselEffects on '%s': %d hull spray sockets."),
+			*Owner->GetName(), HullSprayPoints.Num());
+	}
+}
+
+void UOceanVesselEffectsComponent::TickHullSpraySockets(float DeltaTime)
+{
+	for (FHullSprayPoint& Point : HullSprayPoints)
+	{
+		// Live world transform — the point rides the hull through every
+		// heave, pitch, and turn. This is the difference from rock
+		// sockets, whose transforms are composed once at scan time.
+		const FTransform SocketWorld =
+			HullMesh->GetSocketTransform(Point.SocketName);
+		const FVector Location = SocketWorld.GetLocation();
+
+		float SurfaceZ = 0.0f;
+		if (!WaveSubsystem->GetFullWaveHeight(Location, SurfaceZ))
+		{
+			Point.bHavePrev = false;
+			continue;
+		}
+
+		const float Depth = SurfaceZ - Location.Z; // + = underwater
+
+		// Entry = depth sign flips negative -> positive. Closure speed is
+		// the depth's rate of change, which naturally covers both the
+		// hull dropping onto water and a wave rising onto the hull.
+		if (Point.bHavePrev && Point.PrevDepth < 0.0f && Depth >= 0.0f &&
+			DeltaTime > KINDA_SMALL_NUMBER)
+		{
+			const float ClosureSpeed = (Depth - Point.PrevDepth) / DeltaTime;
+			if (ClosureSpeed >= HullSprayMinSpeed)
+			{
+				const float Intensity = FMath::Clamp(
+					(ClosureSpeed - HullSprayMinSpeed) /
+					FMath::Max(HullSprayFullSpeed - HullSprayMinSpeed, 1.0f),
+					0.0f, 1.0f) * Point.IntensityMul;
+
+				FVector WaterVelocity = FVector::ZeroVector;
+				WaveSubsystem->GetWaterVelocity(Location, WaterVelocity);
+
+				VfxSubsystem->RequestBurst(
+					HullSpraySet,
+					FVector(Location.X, Location.Y, SurfaceZ),
+					SocketWorld.GetUnitAxis(EAxis::X),
+					Intensity, WaterVelocity);
+			}
+		}
+
+		Point.PrevDepth = Depth;
+		Point.bHavePrev = true;
 	}
 }
 
@@ -256,6 +360,12 @@ void UOceanVesselEffectsComponent::TickComponent(
 			VfxSubsystem->RequestBurst(
 				SlamSet, Location, FVector::UpVector, Intensity, WaterVelocity);
 		}
+	}
+
+	// ----- Authored hull spray sockets (burst on water entry) -----
+	if (HullSpraySet && HullMesh && HullSprayPoints.Num() > 0)
+	{
+		TickHullSpraySockets(DeltaTime);
 	}
 
 	// ----- Wake (sustained, along the hull line) -----
