@@ -155,13 +155,23 @@ void UOceanBuoyancyComponent::TickComponent(
 
 	int32 SubmergedCount = 0;
 
+	// Publish per-point state for consumers (vessel VFX). Costs nothing:
+	// everything written below is already computed for the force pass.
+	SampleStates.SetNum(NumPoints);
+	SampleFrame = GFrameCounter;
+
 	// ----- Per-point spring-damper forces -----
-	for (const FVector& LocalPoint : SamplePoints)
+	for (int32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex)
 	{
+		const FVector& LocalPoint = SamplePoints[PointIndex];
 		const FVector WorldPoint = OwnerTransform.TransformPosition(LocalPoint);
+		FOceanBuoyancySample& Sample = SampleStates[PointIndex];
+		Sample = FOceanBuoyancySample();
+		Sample.WorldLocation = WorldPoint;
 
 		FGerstnerResult WaveResult;
 		const bool bOverWater = CachedSubsystem->GetWaveData(WorldPoint, WaveResult);
+		Sample.bOverWater = bOverWater;
 
 		if (!bOverWater)
 		{
@@ -177,6 +187,10 @@ void UOceanBuoyancyComponent::TickComponent(
 
 		const float RawDepth = WaveResult.WorldZ - WorldPoint.Z;
 		const bool bSubmerged = RawDepth > 0.0f;
+
+		Sample.SurfaceZ = WaveResult.WorldZ;
+		Sample.Depth = RawDepth;
+		Sample.bSubmerged = bSubmerged;
 
 		float AppliedForceZ = 0.0f;
 
@@ -195,6 +209,7 @@ void UOceanBuoyancyComponent::TickComponent(
 			// apply a net downward yank stronger than the buoyancy here.
 			const FVector PointVel =
 				PhysicsBody->GetPhysicsLinearVelocityAtPoint(WorldPoint);
+			Sample.PointVelocity = PointVel;
 			const float DamperRaw = -PointDamping * PointVel.Z * MassPerPoint;
 			const float Damper = FMath::Clamp(DamperRaw, -Spring, Spring);
 

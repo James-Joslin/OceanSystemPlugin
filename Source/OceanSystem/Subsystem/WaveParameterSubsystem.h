@@ -88,6 +88,13 @@ public:
 	void RegisterWaterBody(const FWaterBodyEntry& Entry);
 
 	/**
+	 * Fires whenever a water body registers or unregisters (streamed
+	 * sublevels, runtime-spawned bodies). Consumers holding cached
+	 * water-dependent data (e.g. rock spray points) should mark it dirty.
+	 */
+	FSimpleMulticastDelegate OnWaterBodiesChanged;
+
+	/**
 	 * Remove a water body from the registry. Cleans up any blend zones
 	 * referencing the body.
 	 */
@@ -154,6 +161,22 @@ public:
 	 * @return true if the position is over a water body.
 	 */
 	bool GetFullWaveHeight(const FVector& WorldPos, float& OutWorldZ);
+
+	/**
+	 * Water surface velocity (world cm/s) at a position — full visual layers.
+	 *
+	 * Central finite difference of the visual displacement field over a
+	 * small step of REAL world time, routed through EvaluateBody, so the
+	 * body's TimeScale is captured automatically (paused water correctly
+	 * reports zero velocity). Parity by construction: this is the
+	 * derivative of exactly the surface GetFullWaveHeight reports.
+	 *
+	 * Use for spray triggers (impact speed into rock faces), vessel
+	 * relative velocity, and VFX intensity scaling.
+	 *
+	 * @return true if the position is over a water body.
+	 */
+	bool GetWaterVelocity(const FVector& WorldPos, FVector& OutVelocity);
 
 	/**
 	 * Get the Jacobian fold intensity at a world position.
