@@ -344,7 +344,9 @@ void EvaluateGerstnerDisplacementVisual(
 // ===================================================================
 //
 // CPU PARITY: GerstnerEvaluator.cpp mirrors this exactly.
-// Pass AbsoluteWorldPosition (post-WPO) as DisplacedWorldPos.
+// Pass Absolute World Position (Excluding Material Shader Offsets). Gerstner
+// phase is defined on the undisplaced parametric surface; post-WPO XY shifts
+// the phase and breaks CPU/GPU normal parity.
 // ===================================================================
 
 void EvaluateGerstnerNormalFromTexture(
