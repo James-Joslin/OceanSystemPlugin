@@ -2,6 +2,7 @@
 
 #include "WaveParameterSubsystem.h"
 #include "../Components/OceanBodyComponent.h"
+#include "../Components/WaterBodyJunctionComponent.h"
 #include "Components/SplineComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
@@ -77,10 +78,12 @@ void UWaveParameterSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	WaterBodies.Empty();
+	WaterConnections.Empty();
 }
 
 void UWaveParameterSubsystem::Deinitialize()
 {
+	WaterConnections.Empty();
 	WaterBodies.Empty();
 	Super::Deinitialize();
 }
@@ -113,6 +116,13 @@ void UWaveParameterSubsystem::Tick(float DeltaTime)
 	for (FWaterBodyEntry& Entry : WaterBodies)
 	{
 		SyncMaterialInstance(Entry, WorldTime);
+	}
+
+	// Body textures are created/synchronised first. Junction MIDs can then
+	// safely bind both source and target textures without owning duplicates.
+	for (FWaterBodyConnectionEntry& Connection : WaterConnections)
+	{
+		SyncConnectionMaterial(Connection, WorldTime);
 	}
 
 	if (OceanVelDebug::bActive)
@@ -212,6 +222,135 @@ void UWaveParameterSubsystem::MarkBodyDirty(const UOceanBodyComponent* Body)
 	{
 		WaterBodies[Index].WaveConfig.bDirty = true;
 	}
+}
+
+void UWaveParameterSubsystem::RegisterWaterConnection(
+	UOceanBodyComponent* SourceBody,
+	const FWaterBodyConnectionConfig& Config,
+	UMaterialInstanceDynamic* JunctionMID,
+	UWaterBodyJunctionComponent* JunctionComponent)
+{
+	if (!IsValid(SourceBody) || !Config.IsUsable()
+		|| !IsValid(Config.TargetBody)
+		|| SourceBody == Config.TargetBody
+		|| SourceBody->BodyType != EOceanBodyType::River
+		|| Config.TargetBody->BodyType == EOceanBodyType::River)
+	{
+		return;
+	}
+
+	FGuid ConnectionId = Config.ConnectionId;
+	if (!ConnectionId.IsValid())
+	{
+		ConnectionId = FGuid::NewGuid();
+	}
+
+	FWaterBodyConnectionEntry* Existing = WaterConnections.FindByPredicate(
+		[&ConnectionId](const FWaterBodyConnectionEntry& Entry)
+		{
+			return Entry.ConnectionId == ConnectionId;
+		});
+
+	FWaterBodyConnectionEntry NewEntry;
+	NewEntry.ConnectionId = ConnectionId;
+	NewEntry.NetworkId = Config.NetworkId.IsValid() ? Config.NetworkId : ConnectionId;
+	NewEntry.SourceBody = SourceBody;
+	NewEntry.TargetBody = Config.TargetBody;
+	NewEntry.Endpoint = Config.Endpoint;
+	NewEntry.BlendLength = FMath::Max(Config.BlendLength, 10.0f);
+	NewEntry.MouthWidthScale = FMath::Max(Config.MouthWidthScale, 0.25f);
+	NewEntry.JunctionMID = JunctionMID;
+	NewEntry.JunctionComponent = JunctionComponent;
+
+	if (Existing)
+	{
+		*Existing = MoveTemp(NewEntry);
+	}
+	else
+	{
+		WaterConnections.Add(MoveTemp(NewEntry));
+	}
+}
+
+void UWaveParameterSubsystem::UnregisterWaterConnection(const FGuid& ConnectionId)
+{
+	WaterConnections.RemoveAll([&ConnectionId](const FWaterBodyConnectionEntry& Entry)
+	{
+		return Entry.ConnectionId == ConnectionId;
+	});
+}
+
+void UWaveParameterSubsystem::UpdateWaterConnectionGeometry(
+	const FGuid& ConnectionId,
+	const FVector& WorldStart,
+	const FVector& WorldDirection,
+	const FVector& WorldRight,
+	float StartHalfWidth,
+	float EndHalfWidth,
+	float Length)
+{
+	FWaterBodyConnectionEntry* Entry = WaterConnections.FindByPredicate(
+		[&ConnectionId](const FWaterBodyConnectionEntry& Candidate)
+		{
+			return Candidate.ConnectionId == ConnectionId;
+		});
+	if (!Entry)
+	{
+		return;
+	}
+
+	Entry->WorldStart = WorldStart;
+	Entry->WorldDirection = WorldDirection.GetSafeNormal2D();
+	Entry->WorldRight = WorldRight.GetSafeNormal2D();
+	Entry->StartHalfWidth = FMath::Max(StartHalfWidth, 1.0f);
+	Entry->EndHalfWidth = FMath::Max(EndHalfWidth, 1.0f);
+	Entry->BlendLength = FMath::Max(Length, 10.0f);
+	Entry->bHasJunctionGeometry = !Entry->WorldDirection.IsNearlyZero()
+		&& !Entry->WorldRight.IsNearlyZero();
+}
+
+void UWaveParameterSubsystem::UnregisterConnectionsFor(const UOceanBodyComponent* Body)
+{
+	WaterConnections.RemoveAll([Body](const FWaterBodyConnectionEntry& Entry)
+	{
+		return Entry.SourceBody.Get() == Body || Entry.TargetBody.Get() == Body;
+	});
+}
+
+void UWaveParameterSubsystem::RefreshConnectionsFor(
+	const UOceanBodyComponent* Body)
+{
+	if (!Body)
+	{
+		return;
+	}
+
+	TArray<TWeakObjectPtr<UWaterBodyJunctionComponent>> Junctions;
+	for (const FWaterBodyConnectionEntry& Connection : WaterConnections)
+	{
+		if ((Connection.SourceBody.Get() == Body
+				|| Connection.TargetBody.Get() == Body)
+			&& Connection.JunctionComponent.IsValid())
+		{
+			Junctions.AddUnique(Connection.JunctionComponent);
+		}
+	}
+
+	// Work from a snapshot because each rebuild updates its registry entry.
+	for (const TWeakObjectPtr<UWaterBodyJunctionComponent>& Junction : Junctions)
+	{
+		if (Junction.IsValid())
+		{
+			Junction->RebuildJunction();
+		}
+	}
+}
+
+const FWaterBodyEntry* UWaveParameterSubsystem::GetWaterBodyEntry(
+	const UOceanBodyComponent* Body) const
+{
+	const int32 Index = FindEntryIndex(Body);
+	return WaterBodies.IsValidIndex(Index) ? &WaterBodies[Index] : nullptr;
 }
 
 // ===================================================================
@@ -328,42 +467,8 @@ bool UWaveParameterSubsystem::GetWaveData(const FVector& WorldPos, FGerstnerResu
 		return false;
 	}
 
-	const float WorldTime = World->GetTimeSeconds();
-	const FWaterBodyQueryResult Query = QueryBodiesAt(WorldPos);
-
-	if (!Query.IsValid())
-	{
-		return false;
-	}
-
-	if (Query.IsBlending())
-	{
-		// Blend zone — evaluate each body with its own visual shaping
-		// (domain warp + crest sharpness) so the CPU result matches the
-		// rendered surface on both sides, then lerp by blend alpha.
-		const FWaterBodyEntry& Primary = WaterBodies[Query.PrimaryIndex];
-		const FWaterBodyEntry& Secondary = WaterBodies[Query.SecondaryIndex];
-
-		// EvaluateBody dispatches to the correct evaluator (flat or spline)
-		// and applies each body's visual params internally.
-		const FGerstnerResult ResultA = EvaluateBody(Primary, WorldPos, WorldTime, /*bFullEval=*/false);
-		const FGerstnerResult ResultB = EvaluateBody(Secondary, WorldPos, WorldTime, /*bFullEval=*/false);
-
-		const float Alpha = FMath::Clamp(Query.BlendAlpha, 0.0f, 1.0f);
-
-		OutResult.Displacement = FMath::Lerp(ResultA.Displacement, ResultB.Displacement, Alpha);
-		OutResult.Normal = FMath::Lerp(ResultA.Normal, ResultB.Normal, Alpha).GetSafeNormal();
-		OutResult.WorldZ = FMath::Lerp(ResultA.WorldZ, ResultB.WorldZ, Alpha);
-		OutResult.FoldIntensity = FMath::Lerp(ResultA.FoldIntensity, ResultB.FoldIntensity, Alpha);
-	}
-	else
-	{
-		// Single body — direct evaluation
-		const FWaterBodyEntry& Entry = WaterBodies[Query.PrimaryIndex];
-		OutResult = EvaluateBody(Entry, WorldPos, WorldTime, /*bFullEval=*/false);
-	}
-
-	return true;
+	return EvaluateSurfaceAt(
+		WorldPos, World->GetTimeSeconds(), /*bFullEval=*/false, OutResult);
 }
 
 // ===================================================================
@@ -380,16 +485,13 @@ bool UWaveParameterSubsystem::GetFullWaveHeight(const FVector& WorldPos, float& 
 		return false;
 	}
 
-	const float WorldTime = World->GetTimeSeconds();
-	const FWaterBodyQueryResult Query = QueryBodiesAt(WorldPos);
-
-	if (!Query.IsValid())
+	FGerstnerResult Result;
+	if (!EvaluateSurfaceAt(
+		WorldPos, World->GetTimeSeconds(), /*bFullEval=*/true, Result))
 	{
 		return false;
 	}
 
-	const FWaterBodyEntry& Entry = WaterBodies[Query.PrimaryIndex];
-	const FGerstnerResult Result = EvaluateBody(Entry, WorldPos, WorldTime, /*bFullEval=*/true);
 	OutWorldZ = Result.WorldZ;
 	return true;
 }
@@ -407,24 +509,15 @@ bool UWaveParameterSubsystem::GetWaterVelocity(const FVector& WorldPos, FVector&
 	}
 
 	const float WorldTime = World->GetTimeSeconds();
-	const FWaterBodyQueryResult Query = QueryBodiesAt(WorldPos);
-
-	if (!Query.IsValid())
+	FGerstnerResult Before;
+	FGerstnerResult After;
+	if (!EvaluateSurfaceAt(
+		WorldPos, WorldTime - GWaveVelocityHalfStep, /*bFullEval=*/true, Before)
+		|| !EvaluateSurfaceAt(
+			WorldPos, WorldTime + GWaveVelocityHalfStep, /*bFullEval=*/true, After))
 	{
 		return false;
 	}
-
-	const FWaterBodyEntry& Entry = WaterBodies[Query.PrimaryIndex];
-
-	// Central difference in REAL world time. EvaluateBody applies the
-	// body's TimeScale internally, so d/dt of Disp(P, TimeScale * t) is
-	// captured exactly — including TimeScale = 0 (paused) -> zero velocity.
-	// Two evaluations per query; VFX consumers issue tens per frame at
-	// most, negligible next to buoyancy's per-pontoon load.
-	const FGerstnerResult Before = EvaluateBody(
-		Entry, WorldPos, WorldTime - GWaveVelocityHalfStep, /*bFullEval=*/true);
-	const FGerstnerResult After = EvaluateBody(
-		Entry, WorldPos, WorldTime + GWaveVelocityHalfStep, /*bFullEval=*/true);
 
 	OutVelocity =
 		(After.Displacement - Before.Displacement)
@@ -441,17 +534,11 @@ float UWaveParameterSubsystem::GetFoldIntensity(const FVector& WorldPos)
 		return 0.0f;
 	}
 
-	const float WorldTime = World->GetTimeSeconds();
-	const FWaterBodyQueryResult Query = QueryBodiesAt(WorldPos);
-
-	if (!Query.IsValid())
-	{
-		return 0.0f;
-	}
-
-	const FWaterBodyEntry& Entry = WaterBodies[Query.PrimaryIndex];
-	const FGerstnerResult Result = EvaluateBody(Entry, WorldPos, WorldTime, /*bFullEval=*/true);
-	return Result.FoldIntensity;
+	FGerstnerResult Result;
+	return EvaluateSurfaceAt(
+		WorldPos, World->GetTimeSeconds(), /*bFullEval=*/true, Result)
+		? Result.FoldIntensity
+		: 0.0f;
 }
 
 // ===================================================================
@@ -730,6 +817,185 @@ void UWaveParameterSubsystem::RemoveBlendZonesFor(const UOceanBodyComponent* Bod
 // Internal — Evaluation Dispatch
 // ===================================================================
 
+float UWaveParameterSubsystem::ComputeConnectionAlpha(
+	const FWaterBodyConnectionEntry& Connection,
+	const FVector& WorldPos) const
+{
+	if (Connection.bHasJunctionGeometry)
+	{
+		const FVector Delta = WorldPos - Connection.WorldStart;
+		const float Along = FVector::DotProduct(Delta, Connection.WorldDirection);
+		const float T = FMath::Clamp(
+			Along / FMath::Max(Connection.BlendLength, 10.0f), 0.0f, 1.0f);
+		return WaterConnectionMath::SmootherStep01(T);
+	}
+
+	const UOceanBodyComponent* SourceBody = Connection.SourceBody.Get();
+	const FWaterBodyEntry* SourceEntry = GetWaterBodyEntry(SourceBody);
+	const USplineComponent* Spline = SourceEntry
+		? SourceEntry->SplineData.Get()
+		: nullptr;
+	if (!Spline || Spline->IsClosedLoop())
+	{
+		return 0.0f;
+	}
+
+	const float InputKey = Spline->FindInputKeyClosestToWorldLocation(WorldPos);
+	const float Distance = Spline->GetDistanceAlongSplineAtSplineInputKey(InputKey);
+	const float SplineLength = Spline->GetSplineLength();
+	const float BlendLength = FMath::Clamp(
+		Connection.BlendLength, 10.0f, FMath::Max(SplineLength, 10.0f));
+
+	float T = Connection.Endpoint == EWaterConnectionEndpoint::End
+		? (Distance - (SplineLength - BlendLength)) / BlendLength
+		: Distance / BlendLength;
+	T = FMath::Clamp(T, 0.0f, 1.0f);
+
+	// Quintic smootherstep: value and first derivative are stable at both
+	// snapped geometry boundaries. Mirrored in WaterBodyConnection.ush.
+	const float Smooth = WaterConnectionMath::SmootherStep01(T);
+	return Connection.Endpoint == EWaterConnectionEndpoint::End
+		? Smooth
+		: 1.0f - Smooth;
+}
+
+const FWaterBodyConnectionEntry* UWaveParameterSubsystem::FindConnectionAt(
+	const FVector& WorldPos,
+	int32& OutSourceIndex,
+	int32& OutTargetIndex,
+	float& OutAlpha) const
+{
+	OutSourceIndex = INDEX_NONE;
+	OutTargetIndex = INDEX_NONE;
+	OutAlpha = 0.0f;
+
+	const FVector2D XY(WorldPos.X, WorldPos.Y);
+	const FWaterBodyConnectionEntry* Best = nullptr;
+	int32 BestPriority = TNumericLimits<int32>::Lowest();
+
+	for (const FWaterBodyConnectionEntry& Connection : WaterConnections)
+	{
+		const int32 SourceIndex = FindEntryIndex(Connection.SourceBody.Get());
+		const int32 TargetIndex = FindEntryIndex(Connection.TargetBody.Get());
+		if (!WaterBodies.IsValidIndex(SourceIndex)
+			|| !WaterBodies.IsValidIndex(TargetIndex))
+		{
+			continue;
+		}
+
+		const FWaterBodyEntry& Source = WaterBodies[SourceIndex];
+		const FWaterBodyEntry& Target = WaterBodies[TargetIndex];
+		if (Source.BodyType != EOceanBodyType::River
+			|| Target.BodyType == EOceanBodyType::River)
+		{
+			continue;
+		}
+
+		bool bInsideConnection = false;
+		if (Connection.bHasJunctionGeometry)
+		{
+			const FVector Delta = WorldPos - Connection.WorldStart;
+			const float Along = FVector::DotProduct(Delta, Connection.WorldDirection);
+			const float Length = FMath::Max(Connection.BlendLength, 10.0f);
+			if (Along >= 0.0f && Along <= Length)
+			{
+				const float LinearT = Along / Length;
+				const float HalfWidth = FMath::Lerp(
+					Connection.StartHalfWidth,
+					Connection.EndHalfWidth,
+					LinearT);
+				const float Across = FMath::Abs(
+					FVector::DotProduct(Delta, Connection.WorldRight));
+				bInsideConnection = Across <= HalfWidth;
+			}
+		}
+		else
+		{
+			bInsideConnection = IsPointInBody(Source, XY)
+				&& IsPointInBody(Target, XY);
+		}
+
+		if (!bInsideConnection)
+		{
+			continue;
+		}
+
+		const float Alpha = ComputeConnectionAlpha(Connection, WorldPos);
+		if (Alpha <= UE_KINDA_SMALL_NUMBER)
+		{
+			continue;
+		}
+
+		if (!Best || Source.Priority > BestPriority)
+		{
+			Best = &Connection;
+			BestPriority = Source.Priority;
+			OutSourceIndex = SourceIndex;
+			OutTargetIndex = TargetIndex;
+			OutAlpha = Alpha;
+		}
+	}
+
+	return Best;
+}
+
+bool UWaveParameterSubsystem::EvaluateSurfaceAt(
+	const FVector& WorldPos,
+	float WorldTime,
+	bool bFullEval,
+	FGerstnerResult& OutResult) const
+{
+	int32 SourceIndex = INDEX_NONE;
+	int32 TargetIndex = INDEX_NONE;
+	float ConnectionAlpha = 0.0f;
+	if (FindConnectionAt(
+		WorldPos, SourceIndex, TargetIndex, ConnectionAlpha))
+	{
+		const FGerstnerResult Source = EvaluateBody(
+			WaterBodies[SourceIndex], WorldPos, WorldTime, bFullEval);
+		const FGerstnerResult Target = EvaluateBody(
+			WaterBodies[TargetIndex], WorldPos, WorldTime, bFullEval);
+		const float Alpha = FMath::Clamp(ConnectionAlpha, 0.0f, 1.0f);
+
+		OutResult.Displacement = FMath::Lerp(
+			Source.Displacement, Target.Displacement, Alpha);
+		OutResult.Normal = FMath::Lerp(
+			Source.Normal, Target.Normal, Alpha).GetSafeNormal();
+		OutResult.WorldZ = WaterConnectionMath::BlendAbsoluteHeight(
+			Source.WorldZ, Target.WorldZ, Alpha);
+		OutResult.FoldIntensity = FMath::Lerp(
+			Source.FoldIntensity, Target.FoldIntensity, Alpha);
+		return true;
+	}
+
+	const FWaterBodyQueryResult Query = QueryBodiesAt(WorldPos);
+	if (!Query.IsValid())
+	{
+		return false;
+	}
+
+	const FGerstnerResult Primary = EvaluateBody(
+		WaterBodies[Query.PrimaryIndex], WorldPos, WorldTime, bFullEval);
+	if (!Query.IsBlending())
+	{
+		OutResult = Primary;
+		return true;
+	}
+
+	const FGerstnerResult Secondary = EvaluateBody(
+		WaterBodies[Query.SecondaryIndex], WorldPos, WorldTime, bFullEval);
+	const float Alpha = FMath::Clamp(Query.BlendAlpha, 0.0f, 1.0f);
+	OutResult.Displacement = FMath::Lerp(
+		Primary.Displacement, Secondary.Displacement, Alpha);
+	OutResult.Normal = FMath::Lerp(
+		Primary.Normal, Secondary.Normal, Alpha).GetSafeNormal();
+	OutResult.WorldZ = WaterConnectionMath::BlendAbsoluteHeight(
+		Primary.WorldZ, Secondary.WorldZ, Alpha);
+	OutResult.FoldIntensity = FMath::Lerp(
+		Primary.FoldIntensity, Secondary.FoldIntensity, Alpha);
+	return true;
+}
+
 FGerstnerResult UWaveParameterSubsystem::EvaluateBody(
 	const FWaterBodyEntry& Entry, const FVector& WorldPos,
 	float WorldTime, bool bFullEval) const
@@ -893,6 +1159,77 @@ void UWaveParameterSubsystem::SyncMaterialInstance(FWaterBodyEntry& Entry, float
 
 		Entry.DetailWaveConfig.bDirty = false;
 	}
+}
+
+void UWaveParameterSubsystem::SyncConnectionMaterial(
+	FWaterBodyConnectionEntry& Connection,
+	float WorldTime)
+{
+	UMaterialInstanceDynamic* MID = Connection.JunctionMID.Get();
+	const int32 SourceIndex = FindEntryIndex(Connection.SourceBody.Get());
+	const int32 TargetIndex = FindEntryIndex(Connection.TargetBody.Get());
+	if (!MID || !WaterBodies.IsValidIndex(SourceIndex)
+		|| !WaterBodies.IsValidIndex(TargetIndex))
+	{
+		if (MID)
+		{
+			MID->SetScalarParameterValue(TEXT("ConnectionEnabled"), 0.0f);
+		}
+		return;
+	}
+
+	const FWaterBodyEntry& Source = WaterBodies[SourceIndex];
+	const FWaterBodyEntry& Target = WaterBodies[TargetIndex];
+
+	auto PushBody = [MID, WorldTime](
+		const TCHAR* Prefix,
+		const FWaterBodyEntry& Entry)
+	{
+		const FString P(Prefix);
+		auto Name = [&P](const TCHAR* Suffix)
+		{
+			return FName(*(P + Suffix));
+		};
+
+		MID->SetScalarParameterValue(
+			Name(TEXT("WaveCount")),
+			static_cast<float>(Entry.WaveConfig.GetTotalLayerCount()));
+		MID->SetScalarParameterValue(
+			Name(TEXT("WaveTime")),
+			WorldTime * Entry.WaveConfig.TimeScale);
+		MID->SetScalarParameterValue(Name(TEXT("BaseZ")), Entry.BaseZ);
+		MID->SetScalarParameterValue(
+			Name(TEXT("CrestSharpness")), Entry.CrestSharpness);
+		MID->SetScalarParameterValue(
+			Name(TEXT("DomainWarpFrequency")), Entry.DomainWarpFrequency);
+		MID->SetScalarParameterValue(
+			Name(TEXT("DomainWarpAmount")), Entry.DomainWarpAmount);
+
+		if (UTexture2D* WaveTexture = Entry.WaveDataTexture.Get())
+		{
+			MID->SetTextureParameterValue(
+				Name(TEXT("WaveDataTexture")), WaveTexture);
+		}
+
+		MID->SetScalarParameterValue(
+			Name(TEXT("DetailWaveCount")),
+			static_cast<float>(Entry.DetailWaveConfig.GetTotalLayerCount()));
+		if (UTexture2D* DetailTexture = Entry.DetailWaveDataTexture.Get())
+		{
+			MID->SetTextureParameterValue(
+				Name(TEXT("DetailWaveDataTexture")), DetailTexture);
+		}
+	};
+
+	MID->SetScalarParameterValue(TEXT("ConnectionEnabled"), 1.0f);
+	MID->SetScalarParameterValue(
+		TEXT("ConnectionEndpoint"),
+		Connection.Endpoint == EWaterConnectionEndpoint::End ? 1.0f : 0.0f);
+	MID->SetScalarParameterValue(
+		TEXT("ConnectionBlendLength"), Connection.BlendLength);
+
+	PushBody(TEXT("Source"), Source);
+	PushBody(TEXT("Target"), Target);
 }
 
 // ===================================================================

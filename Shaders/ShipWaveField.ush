@@ -1,0 +1,56 @@
+// Shared world-space ship suppression and signed deformation field helpers.
+#ifndef SHIP_WAVE_FIELD_USH
+#define SHIP_WAVE_FIELD_USH
+
+float2 ShipWaveFieldUV(
+    float3 WorldPos,
+    float2 FieldWorldOrigin,
+    float2 FieldWorldSize)
+{
+    return (WorldPos.xy - FieldWorldOrigin) / max(FieldWorldSize, float2(1.0f, 1.0f));
+}
+
+float ShipWaveFieldInside(float2 UV)
+{
+    return step(0.0f, UV.x) * step(UV.x, 1.0f)
+         * step(0.0f, UV.y) * step(UV.y, 1.0f);
+}
+
+float SampleShipSuppressionField(
+    Texture2D SuppressionTexture,
+    SamplerState SuppressionSampler,
+    float3 WorldPos,
+    float2 FieldWorldOrigin,
+    float2 FieldWorldSize,
+    float Enabled)
+{
+    float2 UV = ShipWaveFieldUV(WorldPos, FieldWorldOrigin, FieldWorldSize);
+    float Influence = SuppressionTexture.SampleLevel(
+        SuppressionSampler, saturate(UV), 0).r;
+    return saturate(Influence)
+        * ShipWaveFieldInside(UV)
+        * saturate(Enabled);
+}
+
+float4 SampleShipDeformationField(
+    Texture2D DeformationTexture,
+    SamplerState DeformationSampler,
+    float3 WorldPos,
+    float2 FieldWorldOrigin,
+    float2 FieldWorldSize,
+    float Enabled)
+{
+    float2 UV = ShipWaveFieldUV(WorldPos, FieldWorldOrigin, FieldWorldSize);
+    float4 Field = DeformationTexture.SampleLevel(
+        DeformationSampler, saturate(UV), 0);
+    return Field * ShipWaveFieldInside(UV) * saturate(Enabled);
+}
+
+// Field packing: R = signed Z, G = signed X, B = signed Y, A = foam.
+float3 DecodeShipDeformation(float4 FieldSample)
+{
+    return float3(FieldSample.g, FieldSample.b, FieldSample.r);
+}
+
+#endif // SHIP_WAVE_FIELD_USH
+
