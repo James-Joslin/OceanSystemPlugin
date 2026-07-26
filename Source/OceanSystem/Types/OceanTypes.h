@@ -20,6 +20,9 @@ DECLARE_STATS_GROUP(TEXT("OceanSystem"), STATGROUP_OceanSystem, STATCAT_Advanced
 class UOceanBodyComponent;
 class USplineComponent;
 class UMaterialInstanceDynamic;
+class UMaterialInterface;
+class UTexture2D;
+class UWaterBodyJunctionComponent;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -38,7 +41,7 @@ enum class EBlendType : uint8
 {
 	/** Fade based on depth below overlapping body's surface. */
 	DepthFade,
-	/** Alpha overlap � both bodies render, opacity blended. */
+	/** Alpha overlap - both bodies render, opacity blended. */
 	AlphaOverlap
 };
 
@@ -94,7 +97,7 @@ struct OCEANSYSTEM_API FGerstnerWaveLayer
  *
  * Layers are kept sorted by amplitude descending so that the first N layers
  * are always the physically dominant ones. PhysicsLayerCount controls how
- * many layers the CPU evaluator processes for buoyancy � detail ripples are
+ * many layers the CPU evaluator processes for buoyancy - detail ripples are
  * skipped on the physics path.
  *
  * Call SortLayers() after modifying the Layers array directly.
@@ -252,12 +255,12 @@ struct FBlendZoneEntry
 };
 
 // ---------------------------------------------------------------------------
-// FWaterBodyEntry � Subsystem-internal registry record
+// FWaterBodyEntry - Subsystem-internal registry record
 // ---------------------------------------------------------------------------
 
 /**
  * Internal bookkeeping struct held by WaveParameterSubsystem per registered
- * water body. Not intended for external use � treat as opaque.
+ * water body. Not intended for external use - treat as opaque.
  */
 USTRUCT()
 struct FWaterBodyEntry
@@ -276,7 +279,7 @@ struct FWaterBodyEntry
 	/** Resting water surface height (ocean/lake). */
 	float BaseZ = 0.0f;
 
-	/** Overlap resolution � higher priority body wins queries. */
+	/** Overlap resolution - higher priority body wins queries. */
 	int32 Priority = 0;
 
 	/** Cached wave config (copied on register and on dirty). */
@@ -319,4 +322,122 @@ struct FWaterBodyEntry
 
 	/** River flow speed for UV scrolling along spline tangent. Zero for ocean/lake. */
 	float FlowSpeed = 0.0f;
+};
+
+/** Which open end of a river spline participates in a water connection. */
+UENUM(BlueprintType)
+enum class EWaterConnectionEndpoint : uint8
+{
+	Start,
+	End
+};
+
+/** Math mirrored by WaterBodyConnection.ush and covered by automation tests. */
+namespace WaterConnectionMath
+{
+	FORCEINLINE float SmootherStep01(float Value)
+	{
+		const float T = FMath::Clamp(Value, 0.0f, 1.0f);
+		return T * T * T * (T * (T * 6.0f - 15.0f) + 10.0f);
+	}
+
+	FORCEINLINE float BlendAbsoluteHeight(
+		float SourceWorldZ,
+		float TargetWorldZ,
+		float Alpha)
+	{
+		return FMath::Lerp(
+			SourceWorldZ,
+			TargetWorldZ,
+			FMath::Clamp(Alpha, 0.0f, 1.0f));
+	}
+}
+
+/**
+ * Authoring data for an explicit river-to-water connection.
+ *
+ * Connections are deliberately explicit. Editor detection may populate the
+ * target, but runtime never silently chooses a different body.
+ */
+USTRUCT(BlueprintType)
+struct OCEANSYSTEM_API FWaterBodyConnectionConfig
+{
+	GENERATED_BODY()
+
+	/** Stable identifier used by geometry, CPU queries, and shader bindings. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Connection")
+	FGuid ConnectionId;
+
+	/** Stable group shared by connected surfaces and their ship-wave fields. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Connection")
+	FGuid NetworkId;
+
+	/** Open river endpoint controlled by this record. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Connection")
+	EWaterConnectionEndpoint Endpoint = EWaterConnectionEndpoint::End;
+
+	/** Target lake/ocean body. River targets are rejected. */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Connection")
+	TObjectPtr<UOceanBodyComponent> TargetBody = nullptr;
+
+	/**
+	 * Material compiled with the master material's static ConnectionMode enabled.
+	 * Falls back to the river material to keep old content visible, but the
+	 * fallback cannot evaluate both wave sets until its graph is upgraded.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Connection|Material")
+	TSoftObjectPtr<UMaterialInterface> JunctionMaterial;
+
+	/** Distance along the river over which source waves become target waves. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Connection",
+		meta = (ClampMin = "10.0", UIMin = "100.0", UIMax = "10000.0"))
+	float BlendLength = 1500.0f;
+
+	/** Width of the target-side mouth relative to the river width. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Connection",
+		meta = (ClampMin = "0.25", UIMin = "0.5", UIMax = "4.0"))
+	float MouthWidthScale = 1.5f;
+
+	/** Number of quads along the generated transition strip. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Connection|Geometry",
+		meta = (ClampMin = "2", ClampMax = "128", UIMin = "4", UIMax = "64"))
+	int32 LengthSubdivisions = 24;
+
+	/** Number of quads across the generated transition strip. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Connection|Geometry",
+		meta = (ClampMin = "1", ClampMax = "64", UIMin = "2", UIMax = "32"))
+	int32 WidthSubdivisions = 8;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Connection")
+	bool bEnabled = false;
+
+	bool IsUsable() const
+	{
+		return bEnabled && TargetBody != nullptr && BlendLength > UE_KINDA_SMALL_NUMBER;
+	}
+};
+
+/** Runtime connection record cached by the wave subsystem. */
+USTRUCT()
+struct FWaterBodyConnectionEntry
+{
+	GENERATED_BODY()
+
+	FGuid ConnectionId;
+	FGuid NetworkId;
+	TWeakObjectPtr<UOceanBodyComponent> SourceBody;
+	TWeakObjectPtr<UOceanBodyComponent> TargetBody;
+	EWaterConnectionEndpoint Endpoint = EWaterConnectionEndpoint::End;
+	float BlendLength = 1500.0f;
+	float MouthWidthScale = 1.5f;
+	FVector WorldStart = FVector::ZeroVector;
+	FVector WorldDirection = FVector::ForwardVector;
+	FVector WorldRight = FVector::RightVector;
+	float StartHalfWidth = 0.0f;
+	float EndHalfWidth = 0.0f;
+	bool bHasJunctionGeometry = false;
+
+	/** MID owned by the junction component. Null is valid for CPU-only use. */
+	TWeakObjectPtr<UMaterialInstanceDynamic> JunctionMID;
+	TWeakObjectPtr<UWaterBodyJunctionComponent> JunctionComponent;
 };
