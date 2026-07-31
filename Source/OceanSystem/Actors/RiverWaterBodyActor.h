@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "../Types/OceanTypes.h"
 #include "RiverWaterBodyActor.generated.h"
 
 class USplineComponent;
@@ -11,6 +12,7 @@ class USplineMeshComponent;
 class UOceanBodyComponent;
 class UStaticMesh;
 class UUnderwaterPostProcessComponent;
+class UWaterBodyJunctionComponent;
 
 /**
  * Water body actor for rivers defined by a spline path.
@@ -21,7 +23,7 @@ class UUnderwaterPostProcessComponent;
  * naturally via spline point Z positions.
  *
  * The source mesh (RiverSegmentMesh) should be a flat subdivided
- * plane — author it in Blender at 100×100 units, subdivide to the
+ * plane - author it in Blender at 100x100 units, subdivide to the
  * desired resolution, and export with LOD levels. The engine's
  * built-in static mesh LOD system handles distance-based transitions
  * automatically. SplineMeshComponent StartScale/EndScale drive the
@@ -45,22 +47,28 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "River")
 	TObjectPtr<USplineComponent> RiverSpline;
 
-	/** Water body component — registered with subsystem for wave eval. */
+	/** Water body component - registered with subsystem for wave eval. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "River")
 	TObjectPtr<UOceanBodyComponent> OceanBody;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water|Underwater")
 	TObjectPtr<UUnderwaterPostProcessComponent> UnderwaterPP;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "River|Connections")
+	TObjectPtr<UWaterBodyJunctionComponent> StartJunction;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "River|Connections")
+	TObjectPtr<UWaterBodyJunctionComponent> EndJunction;
+
 	// -------------------------------------------------------------------
 	// River Properties
 	// -------------------------------------------------------------------
 
 	/** Subdivided plane mesh deformed along each spline segment.
-		Author in Blender: 100×100 unit plane, subdivided, with LODs.
+		Author in Blender: 100x100 unit plane, subdivided, with LODs.
 		The engine's static mesh LOD system handles distance transitions.
 		If unset, falls back to the engine's BasicShapes/Plane (2 tris,
-		no LODs — only useful for testing). */
+		no LODs - only useful for testing). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "River|Geometry")
 	TSoftObjectPtr<UStaticMesh> RiverSegmentMesh;
 
@@ -78,6 +86,12 @@ public:
 		meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "1000.0"))
 	float FlowSpeed = 100.0f;
 
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "River|Connections")
+	FWaterBodyConnectionConfig StartConnection;
+
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "River|Connections")
+	FWaterBodyConnectionConfig EndConnection;
+
 	// -------------------------------------------------------------------
 	// Actions
 	// -------------------------------------------------------------------
@@ -89,6 +103,12 @@ public:
 	/** Reapply the MID to all spline mesh segments. */
 	UFUNCTION(BlueprintCallable, Category = "River")
 	void RefreshMeshMaterial();
+
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "River|Connections")
+	void RefreshJunctions();
+
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "River|Connections")
+	void DetectWaterConnections();
 
 protected:
 	virtual void BeginPlay() override;
@@ -116,7 +136,7 @@ private:
 		const FVector& StartPos, const FVector& StartTangent,
 		const FVector& EndPos, const FVector& EndTangent);
 
-	/** Resolve the source mesh — user asset or engine fallback. */
+	/** Resolve the source mesh - user asset or engine fallback. */
 	UStaticMesh* GetSegmentMesh() const;
 
 	/** All spline mesh segments. Rebuilt on spline edit. */

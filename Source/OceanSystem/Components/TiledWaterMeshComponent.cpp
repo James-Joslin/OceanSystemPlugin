@@ -5,11 +5,94 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "Engine/World.h"
+#include "CompGeom/Delaunay2.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
 #include "EditorViewportClient.h"
 #endif
+
+namespace
+{
+	using FPoint2 = UE::Math::TVector2<double>;
+
+	template <typename TInside, typename TIntersect>
+	TArray<FPoint2> ClipPolygonHalfPlane(
+		const TArray<FPoint2>& Input,
+		TInside&& IsInside,
+		TIntersect&& Intersect)
+	{
+		TArray<FPoint2> Output;
+		if (Input.IsEmpty())
+		{
+			return Output;
+		}
+
+		FPoint2 Previous = Input.Last();
+		bool bPreviousInside = IsInside(Previous);
+		for (const FPoint2& Current : Input)
+		{
+			const bool bCurrentInside = IsInside(Current);
+			if (bCurrentInside != bPreviousInside)
+			{
+				Output.Add(Intersect(Previous, Current));
+			}
+			if (bCurrentInside)
+			{
+				Output.Add(Current);
+			}
+			Previous = Current;
+			bPreviousInside = bCurrentInside;
+		}
+		return Output;
+	}
+
+	TArray<FPoint2> ClipPolygonToSquare(
+		const TArray<FPoint2>& Polygon,
+		double HalfSize)
+	{
+		TArray<FPoint2> Result = Polygon;
+		Result = ClipPolygonHalfPlane(Result,
+			[HalfSize](const FPoint2& P) { return P.X >= -HalfSize; },
+			[HalfSize](const FPoint2& A, const FPoint2& B)
+			{
+				const double T = (-HalfSize - A.X) / (B.X - A.X);
+				return FPoint2(-HalfSize, FMath::Lerp(A.Y, B.Y, T));
+			});
+		Result = ClipPolygonHalfPlane(Result,
+			[HalfSize](const FPoint2& P) { return P.X <= HalfSize; },
+			[HalfSize](const FPoint2& A, const FPoint2& B)
+			{
+				const double T = (HalfSize - A.X) / (B.X - A.X);
+				return FPoint2(HalfSize, FMath::Lerp(A.Y, B.Y, T));
+			});
+		Result = ClipPolygonHalfPlane(Result,
+			[HalfSize](const FPoint2& P) { return P.Y >= -HalfSize; },
+			[HalfSize](const FPoint2& A, const FPoint2& B)
+			{
+				const double T = (-HalfSize - A.Y) / (B.Y - A.Y);
+				return FPoint2(FMath::Lerp(A.X, B.X, T), -HalfSize);
+			});
+		Result = ClipPolygonHalfPlane(Result,
+			[HalfSize](const FPoint2& P) { return P.Y <= HalfSize; },
+			[HalfSize](const FPoint2& A, const FPoint2& B)
+			{
+				const double T = (HalfSize - A.Y) / (B.Y - A.Y);
+				return FPoint2(FMath::Lerp(A.X, B.X, T), HalfSize);
+			});
+
+		// Remove adjacent duplicates introduced when a cutout touches a tile edge.
+		for (int32 Index = Result.Num() - 1; Index >= 0 && Result.Num() >= 2; --Index)
+		{
+			const int32 Previous = (Index - 1 + Result.Num()) % Result.Num();
+			if (Result[Index].Equals(Result[Previous], 0.01))
+			{
+				Result.RemoveAt(Index);
+			}
+		}
+		return Result;
+	}
+}
 
 // ===================================================================
 // Constructor
@@ -145,9 +228,16 @@ void UTiledWaterMeshComponent::PostEditChangeProperty(
 	if (PropName == GET_MEMBER_NAME_CHECKED(UTiledWaterMeshComponent, TilesX)
 		|| PropName == GET_MEMBER_NAME_CHECKED(UTiledWaterMeshComponent, TilesY)
 		|| PropName == GET_MEMBER_NAME_CHECKED(UTiledWaterMeshComponent, TileSize)
-		|| PropName == GET_MEMBER_NAME_CHECKED(UTiledWaterMeshComponent, TileSubdivisions))
+		|| PropName == GET_MEMBER_NAME_CHECKED(UTiledWaterMeshComponent, TileSubdivisions)
+		|| PropName == GET_MEMBER_NAME_CHECKED(UTiledWaterMeshComponent, LODDistances)
+		|| PropName == GET_MEMBER_NAME_CHECKED(UTiledWaterMeshComponent, LODSubdivisions))
 	{
 		BuildTileMesh();
+	}
+	else if (PropName == GET_MEMBER_NAME_CHECKED(
+		UTiledWaterMeshComponent, VerticalBoundsExtension))
+	{
+		RefreshBoundsScale();
 	}
 }
 #endif
@@ -228,7 +318,9 @@ void UTiledWaterMeshComponent::BuildTileMesh()
 				TArray<FVector2D> UVs;
 				TArray<FProcMeshTangent> Tangents;
 
-				GenerateGridMesh(TileSize, Subdivs, Vertices, Triangles, Normals, UVs, Tangents);
+				GenerateGridMesh(
+					TileSize, Subdivs, FVector(CentreX, CentreY, 0.0f),
+					Vertices, Triangles, Normals, UVs, Tangents);
 
 				Tile->CreateMeshSection(LOD, Vertices, Triangles, Normals,
 					UVs, EmptyColors, Tangents, /*bCreateCollision=*/false);
@@ -286,6 +378,51 @@ void UTiledWaterMeshComponent::SetMaterialOnAllTiles(UMaterialInterface* Materia
 		for (int32 LOD = 0; LOD < NumLODs; ++LOD)
 		{
 			Tile->SetMaterial(LOD, Material);
+		}
+	}
+}
+
+bool UTiledWaterMeshComponent::RegisterCutout(
+	const FGuid& CutoutId,
+	const TArray<FVector>& WorldBoundary)
+{
+	if (!CutoutId.IsValid() || WorldBoundary.Num() < 3)
+	{
+		return false;
+	}
+
+	TArray<FVector2D> Boundary;
+	Boundary.Reserve(WorldBoundary.Num());
+	for (const FVector& Point : WorldBoundary)
+	{
+		Boundary.Emplace(Point.X, Point.Y);
+	}
+
+	RegisteredCutouts.Add(CutoutId, MoveTemp(Boundary));
+	BuildTileMesh();
+	return true;
+}
+
+void UTiledWaterMeshComponent::UnregisterCutout(const FGuid& CutoutId)
+{
+	if (RegisteredCutouts.Remove(CutoutId) > 0)
+	{
+		BuildTileMesh();
+	}
+}
+
+void UTiledWaterMeshComponent::RefreshBoundsScale()
+{
+	const float Scale = TileSize > UE_KINDA_SMALL_NUMBER
+		? FMath::Max(1.0f + (VerticalBoundsExtension * 2.0f) / TileSize, 1.0f)
+		: 1.0f;
+	for (UProceduralMeshComponent* Tile : TileMeshes)
+	{
+		if (Tile)
+		{
+			Tile->BoundsScale = Scale;
+			Tile->UpdateBounds();
+			Tile->MarkRenderTransformDirty();
 		}
 	}
 }
@@ -364,6 +501,7 @@ void UTiledWaterMeshComponent::DestroyTileMeshes()
 
 void UTiledWaterMeshComponent::GenerateGridMesh(
 	float GridSize, int32 Subdivisions,
+	const FVector& TileRelativeCenter,
 	TArray<FVector>& OutVertices,
 	TArray<int32>& OutTriangles,
 	TArray<FVector>& OutNormals,
@@ -406,25 +544,105 @@ void UTiledWaterMeshComponent::GenerateGridMesh(
 		}
 	}
 
-	// ----- Triangles (CCW → +Z normal) -----
-	OutTriangles.Reserve(N * N * 6);
-
-	for (int32 j = 0; j < N; ++j)
+	TArray<TArray<FPoint2>> ClippedCutouts;
+	for (const TPair<FGuid, TArray<FVector2D>>& Pair : RegisteredCutouts)
 	{
-		for (int32 i = 0; i < N; ++i)
+		TArray<FPoint2> LocalPolygon;
+		LocalPolygon.Reserve(Pair.Value.Num());
+		for (const FVector2D& WorldPoint : Pair.Value)
 		{
-			const int32 BL = j * VN + i;
-			const int32 BR = j * VN + (i + 1);
-			const int32 TL = (j + 1) * VN + i;
-			const int32 TR = (j + 1) * VN + (i + 1);
-
-			OutTriangles.Add(BL);
-			OutTriangles.Add(BR);
-			OutTriangles.Add(TR);
-
-			OutTriangles.Add(BL);
-			OutTriangles.Add(TR);
-			OutTriangles.Add(TL);
+			const FVector ComponentPoint = GetComponentTransform().InverseTransformPosition(
+				FVector(WorldPoint.X, WorldPoint.Y, GetComponentLocation().Z));
+			LocalPolygon.Emplace(
+				ComponentPoint.X - TileRelativeCenter.X,
+				ComponentPoint.Y - TileRelativeCenter.Y);
 		}
+
+		TArray<FPoint2> Clipped = ClipPolygonToSquare(LocalPolygon, HalfSize);
+		if (Clipped.Num() >= 3)
+		{
+			ClippedCutouts.Add(MoveTemp(Clipped));
+		}
+	}
+
+	// Fast path for ordinary tiles. They retain the original deterministic
+	// grid topology and do not pay for constrained triangulation.
+	if (ClippedCutouts.IsEmpty())
+	{
+		OutTriangles.Reserve(N * N * 6);
+		for (int32 j = 0; j < N; ++j)
+		{
+			for (int32 i = 0; i < N; ++i)
+			{
+				const int32 BL = j * VN + i;
+				const int32 BR = j * VN + (i + 1);
+				const int32 TL = (j + 1) * VN + i;
+				const int32 TR = (j + 1) * VN + (i + 1);
+				OutTriangles.Append({ BL, BR, TR, BL, TR, TL });
+			}
+		}
+		return;
+	}
+
+	// Constrained Delaunay keeps all normal grid vertices for WPO resolution,
+	// while inserting exact connection edges as holes in the target surface.
+	TArray<FPoint2> Points;
+	Points.Reserve(OutVertices.Num() + 32);
+	for (const FVector& Vertex : OutVertices)
+	{
+		Points.Emplace(Vertex.X, Vertex.Y);
+	}
+
+	TArray<UE::Geometry::FIndex2i> ConstraintEdges;
+	TArray<int32> OuterLoop;
+	OuterLoop.Reserve(N * 4);
+	for (int32 i = 0; i <= N; ++i) OuterLoop.Add(i);
+	for (int32 j = 1; j <= N; ++j) OuterLoop.Add(j * VN + N);
+	for (int32 i = N - 1; i >= 0; --i) OuterLoop.Add(N * VN + i);
+	for (int32 j = N - 1; j >= 1; --j) OuterLoop.Add(j * VN);
+	for (int32 Index = 0; Index < OuterLoop.Num(); ++Index)
+	{
+		ConstraintEdges.Emplace(
+			OuterLoop[Index], OuterLoop[(Index + 1) % OuterLoop.Num()]);
+	}
+
+	for (const TArray<FPoint2>& Cutout : ClippedCutouts)
+	{
+		const int32 StartIndex = Points.Num();
+		for (const FPoint2& Point : Cutout)
+		{
+			Points.Add(Point);
+			OutVertices.Emplace(Point.X, Point.Y, 0.0);
+			OutNormals.Add(FVector::UpVector);
+			OutUVs.Emplace(
+				(Point.X + HalfSize) / GridSize,
+				(Point.Y + HalfSize) / GridSize);
+			OutTangents.Add(FlatTangent);
+		}
+		for (int32 Index = 0; Index < Cutout.Num(); ++Index)
+		{
+			ConstraintEdges.Emplace(
+				StartIndex + Index,
+				StartIndex + ((Index + 1) % Cutout.Num()));
+		}
+	}
+
+	UE::Geometry::FDelaunay2 Delaunay;
+	Delaunay.bAutomaticallyFixEdgesToDuplicateVertices = true;
+	if (!Delaunay.Triangulate(Points, ConstraintEdges))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("TiledWaterMesh: constrained cutout triangulation failed; "
+				"leaving the affected tile empty to prevent overlapping SLW surfaces."));
+		OutTriangles.Empty();
+		return;
+	}
+
+	const TArray<UE::Geometry::FIndex3i> Filled = Delaunay.GetFilledTriangles(
+		ConstraintEdges, UE::Geometry::FDelaunay2::EFillMode::OddWinding);
+	OutTriangles.Reserve(Filled.Num() * 3);
+	for (const UE::Geometry::FIndex3i& Triangle : Filled)
+	{
+		OutTriangles.Append({ Triangle.A, Triangle.B, Triangle.C });
 	}
 }

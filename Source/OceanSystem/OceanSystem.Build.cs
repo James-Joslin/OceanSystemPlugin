@@ -12,6 +12,7 @@ public class OceanSystem : ModuleRules
             "CoreUObject",
             "Engine",
             "ProceduralMeshComponent",
+            "GeometryCore",
             "Niagara",
             "DeveloperSettings"   // UOceanVfxSettings (Project Settings page)
         });

@@ -152,6 +152,7 @@ void UOceanRockSpraySubsystem::RescanSprayPoints()
 	int32 NumCandidates = 0;
 	int32 NumRejectedNoWater = 0;
 	int32 NumRejectedMargin = 0;
+	int32 NumSkippedMovable = 0;
 
 	// Accepts a world-space candidate; pre-filters against the water.
 	auto TryAddPoint = [&](const FTransform& SocketWorld, float IntensityMul)
@@ -186,6 +187,21 @@ void UOceanRockSpraySubsystem::RescanSprayPoints()
 		if (!Component || Component->GetWorld() != World ||
 			!Component->IsRegistered() || !Component->GetStaticMesh())
 		{
+			continue;
+		}
+
+		// STATIC mobility only. The whole scan model — compose socket
+		// transforms once into fixed world positions — is only valid for
+		// meshes that cannot move. A movable mesh with Spray_ sockets
+		// (a ship's hull) belongs to OceanVesselEffectsComponent, which
+		// resolves the same sockets through the LIVE transform each tick;
+		// scanning it here would freeze phantom points at spawn.
+		if (Component->Mobility != EComponentMobility::Static)
+		{
+			if (Component->GetStaticMesh()->Sockets.Num() > 0)
+			{
+				++NumSkippedMovable;
+			}
 			continue;
 		}
 
@@ -232,9 +248,11 @@ void UOceanRockSpraySubsystem::RescanSprayPoints()
 	UE_LOG(LogTemp, Log,
 		TEXT("OceanRockSpray: scan kept %d spray points in %d grid cells "
 			"(%d components had '%s' sockets, %d candidate points, "
-			"%d rejected: not over water, %d rejected: outside vertical margin)."),
+			"%d rejected: not over water, %d rejected: outside vertical margin, "
+			"%d movable components skipped)."),
 		Points.Num(), Grid.Num(), NumComponentsWithSockets, *Prefix,
-		NumCandidates, NumRejectedNoWater, NumRejectedMargin);
+		NumCandidates, NumRejectedNoWater, NumRejectedMargin,
+		NumSkippedMovable);
 }
 
 // ===================================================================

@@ -10,6 +10,8 @@
 
 class UTexture2D;
 class UOceanBodyComponent;
+class UMaterialInstanceDynamic;
+class UWaterBodyJunctionComponent;
 
 // ---------------------------------------------------------------------------
 // FWaterBodyQueryResult
@@ -45,7 +47,7 @@ struct FWaterBodyQueryResult
  *   1. Water body registry with priority-sorted entries.
  *   2. Blend zone auto-detection on registration.
  *   3. Spatial queries to find which body covers a world position.
- *   4. CPU evaluation dispatch � physics path (buoyancy) and full path
+ *   4. CPU evaluation dispatch - physics path (buoyancy) and full path
  *      (spray, PP, debug), including river spline and blend zone variants.
  *   5. Per-frame MID sync: pushes wave parameters and scaled time to each
  *      body's Dynamic Material Instance.
@@ -55,7 +57,7 @@ struct FWaterBodyQueryResult
  * FApp::GetCurrentTime(). At runtime uses World->GetTimeSeconds()
  * which respects pause and time dilation.
  *
- * No MPC � everything is per-body via Dynamic Material Instances.
+ * No MPC - everything is per-body via Dynamic Material Instances.
  */
 UCLASS()
 class OCEANSYSTEM_API UWaveParameterSubsystem : public UTickableWorldSubsystem
@@ -118,6 +120,39 @@ public:
 	void MarkBodyDirty(const UOceanBodyComponent* Body);
 
 	// -------------------------------------------------------------------
+	// Explicit river connections
+	// -------------------------------------------------------------------
+
+	/** Register or replace one explicit river endpoint connection. */
+	void RegisterWaterConnection(
+		UOceanBodyComponent* SourceBody,
+		const FWaterBodyConnectionConfig& Config,
+		UMaterialInstanceDynamic* JunctionMID = nullptr,
+		UWaterBodyJunctionComponent* JunctionComponent = nullptr);
+
+	/** Remove a connection by its stable ID. */
+	void UnregisterWaterConnection(const FGuid& ConnectionId);
+
+	/** Update the generated junction footprint used by CPU spatial queries. */
+	void UpdateWaterConnectionGeometry(
+		const FGuid& ConnectionId,
+		const FVector& WorldStart,
+		const FVector& WorldDirection,
+		const FVector& WorldRight,
+		float StartHalfWidth,
+		float EndHalfWidth,
+		float Length);
+
+	/** Remove every connection that references a body. */
+	void UnregisterConnectionsFor(const UOceanBodyComponent* Body);
+
+	/** Rebuild geometry/bindings for explicit connections touching Body. */
+	void RefreshConnectionsFor(const UOceanBodyComponent* Body);
+
+	/** Read-only lookup used by junction geometry and debug tools. */
+	const FWaterBodyEntry* GetWaterBodyEntry(const UOceanBodyComponent* Body) const;
+
+	// -------------------------------------------------------------------
 	// Spatial Queries
 	// -------------------------------------------------------------------
 
@@ -129,7 +164,7 @@ public:
 	const FWaterBodyEntry* FindWaterBodyAt(const FVector2D& XY) const;
 
 	// -------------------------------------------------------------------
-	// CPU Evaluation � Physics Path (buoyancy)
+	// CPU Evaluation - Physics Path (buoyancy)
 	// -------------------------------------------------------------------
 
 	/**
@@ -150,7 +185,7 @@ public:
 	bool GetWaveData(const FVector& WorldPos, FGerstnerResult& OutResult);
 
 	// -------------------------------------------------------------------
-	// CPU Evaluation � Full Path (spray, PP, debug)
+	// CPU Evaluation - Full Path (spray, PP, debug)
 	// -------------------------------------------------------------------
 
 	/**
@@ -239,6 +274,25 @@ private:
 		const FWaterBodyEntry& Entry, const FVector& WorldPos,
 		float WorldTime, bool bFullEval) const;
 
+	/** Quintic endpoint blend shared conceptually with WaterBodyConnection.ush. */
+	float ComputeConnectionAlpha(
+		const FWaterBodyConnectionEntry& Connection,
+		const FVector& WorldPos) const;
+
+	/** Find the highest-priority explicit connection affecting a position. */
+	const FWaterBodyConnectionEntry* FindConnectionAt(
+		const FVector& WorldPos,
+		int32& OutSourceIndex,
+		int32& OutTargetIndex,
+		float& OutAlpha) const;
+
+	/** Evaluate a single or connected surface for all public CPU query paths. */
+	bool EvaluateSurfaceAt(
+		const FVector& WorldPos,
+		float WorldTime,
+		bool bFullEval,
+		FGerstnerResult& OutResult) const;
+
 	/**
 	 * Push all wave parameters and current time into a body's MID.
 	 * Called on tick for dirty bodies (full param sync) and every frame
@@ -246,9 +300,12 @@ private:
 	 */
 	void SyncMaterialInstance(FWaterBodyEntry& Entry, float WorldTime);
 
+	/** Push source/target wave data into a junction-owned MID. */
+	void SyncConnectionMaterial(FWaterBodyConnectionEntry& Connection, float WorldTime);
+
 	/**
-	* Create a transient 128�2 RGBA32F texture for wave data.
-	* No disk asset � lives in memory only, GC'd when unreferenced.
+	* Create a transient 128x2 RGBA32F texture for wave data.
+	* No disk asset - lives in memory only, GC'd when unreferenced.
 	*/
 	UTexture2D* CreateWaveDataTexture() const;
 
@@ -266,4 +323,7 @@ private:
 
 	/** All registered water bodies, sorted by priority descending. */
 	TArray<FWaterBodyEntry> WaterBodies;
+
+	/** Explicit, serialized river endpoint connections registered by actors. */
+	TArray<FWaterBodyConnectionEntry> WaterConnections;
 };

@@ -86,8 +86,33 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Exclusion")
 	float LocalYawOffsetDegrees = 0.0f;
 
+	/** Signed water height offset beneath the hull, in cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Exclusion|Deformation")
+	float InteriorVerticalOffset = -20.0f;
+
+	/** Additional raised water at the bow, in cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Exclusion|Deformation")
+	float BowVerticalOffset = 20.0f;
+
+	/** Horizontal water push away from each side of the hull, in cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Exclusion|Deformation")
+	float SideHorizontalOffset = 10.0f;
+
+	/** Auxiliary foam/turbulence written to deformation alpha. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Exclusion|Deformation",
+		meta = (ClampMin = "0.0"))
+	float DeformationFoam = 1.0f;
+
 	/** Returns the body explicitly selected by the user, if any. */
 	UOceanBodyComponent* GetExplicitTargetWaterBody() const { return TargetWaterBody; }
+	FVector4 GetDeformationParams() const
+	{
+		return FVector4(
+			InteriorVerticalOffset,
+			BowVerticalOffset,
+			SideHorizontalOffset,
+			DeformationFoam);
+	}
 
 	void GetProxyWorldData(
 		FVector2D& OutCenter,

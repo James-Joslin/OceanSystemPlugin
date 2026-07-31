@@ -1,0 +1,105 @@
+// Dual-body Single Layer Water junction helpers.
+#ifndef WATER_BODY_CONNECTION_USH
+#define WATER_BODY_CONNECTION_USH
+
+#include "/OceanSystem/GerstnerWave.ush"
+
+float WaterConnectionSmootherStep(float T)
+{
+    T = saturate(T);
+    return T * T * T * (T * (T * 6.0f - 15.0f) + 10.0f);
+}
+
+float ComputeWaterConnectionAlpha(
+    float3 PreWPOWorldPos,
+    float3 ConnectionWorldStart,
+    float3 ConnectionWorldDirection,
+    float ConnectionBlendLength)
+{
+    float Along = dot(
+        PreWPOWorldPos - ConnectionWorldStart,
+        normalize(ConnectionWorldDirection));
+    return WaterConnectionSmootherStep(
+        Along / max(ConnectionBlendLength, 1.0f));
+}
+
+float3 BlendAbsoluteWaterSurfaceWPO(
+    float3 PreWPOWorldPos,
+    float3 SourceDisplacement,
+    float3 TargetDisplacement,
+    float TargetBaseZ,
+    float Alpha)
+{
+    Alpha = saturate(Alpha);
+    float SourceWorldZ = PreWPOWorldPos.z + SourceDisplacement.z;
+    float TargetWorldZ = TargetBaseZ + TargetDisplacement.z;
+
+    float3 Result;
+    Result.xy = lerp(SourceDisplacement.xy, TargetDisplacement.xy, Alpha);
+    Result.z = lerp(SourceWorldZ, TargetWorldZ, Alpha) - PreWPOWorldPos.z;
+    return Result;
+}
+
+float3 BlendWaterConnectionNormals(
+    float3 SourceNormal,
+    float3 TargetNormal,
+    float3 ShipDeformationNormal,
+    float Alpha,
+    float ShipNormalStrength)
+{
+    float3 BodyNormal = normalize(lerp(SourceNormal, TargetNormal, saturate(Alpha)));
+    return normalize(lerp(
+        BodyNormal,
+        BlendNormals_RNM(BodyNormal, ShipDeformationNormal),
+        saturate(ShipNormalStrength)));
+}
+
+void EvaluateConnectedWaterWPO(
+    float3 PreWPOWorldPos,
+    float ConnectionAlpha,
+    float WaveFade,
+    float3 ShipDeformation,
+    float SourceTime,
+    int SourceWaveCount,
+    Texture2D SourceWaveData,
+    float SourceWarpFrequency,
+    float SourceWarpAmount,
+    float SourceCrestSharpness,
+    float TargetTime,
+    int TargetWaveCount,
+    Texture2D TargetWaveData,
+    float TargetBaseZ,
+    float TargetWarpFrequency,
+    float TargetWarpAmount,
+    float TargetCrestSharpness,
+    float Choppiness,
+    float SmallWaveChop,
+    float MaxHorizontal,
+    out float3 FinalWPO)
+{
+    float3 SourcePosition = DomainWarpPosition(
+        PreWPOWorldPos, SourceTime, SourceWarpFrequency, SourceWarpAmount);
+    float3 TargetPosition = DomainWarpPosition(
+        PreWPOWorldPos, TargetTime, TargetWarpFrequency, TargetWarpAmount);
+
+    float3 SourceDisplacement;
+    float3 TargetDisplacement;
+    EvaluateGerstnerDisplacementVisual(
+        SourcePosition, SourceTime, SourceWaveCount, SourceWaveData,
+        Choppiness, SmallWaveChop, SourceCrestSharpness,
+        MaxHorizontal, WaveFade, SourceDisplacement);
+    EvaluateGerstnerDisplacementVisual(
+        TargetPosition, TargetTime, TargetWaveCount, TargetWaveData,
+        Choppiness, SmallWaveChop, TargetCrestSharpness,
+        MaxHorizontal, WaveFade, TargetDisplacement);
+
+    FinalWPO = BlendAbsoluteWaterSurfaceWPO(
+        PreWPOWorldPos,
+        SourceDisplacement,
+        TargetDisplacement,
+        TargetBaseZ,
+        ConnectionAlpha) + ShipDeformation;
+}
+
+#endif // WATER_BODY_CONNECTION_USH
+

@@ -7,9 +7,11 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/StaticMesh.h"
 #include "../Components/UnderwaterPostProcessComponent.h"
+#include "../Components/WaterBodyJunctionComponent.h"
+#include "../Subsystem/WaveParameterSubsystem.h"
 
 // ===================================================================
-// Custom primitive data — river-space shader coordinates
+// Custom primitive data - river-space shader coordinates
 // ===================================================================
 //
 // Each spline mesh segment carries four floats of custom primitive
@@ -19,23 +21,23 @@
 // material for flow UV scrolling and endpoint/bank edge fades.
 //
 // Custom primitive data is per-component, so this works with the
-// single shared MID from OceanBodyComponent — no per-segment MIDs.
+// single shared MID from OceanBodyComponent - no per-segment MIDs.
 //
 // KEEP IN SYNC with the CustomPrimitiveData indices in the material.
 // ===================================================================
 
 namespace RiverCPD
 {
-	/** Slot 0 — distance along the spline at the segment start (cm). */
+	/** Slot 0 - distance along the spline at the segment start (cm). */
 	static constexpr int32 SegmentStartDist = 0;
 
-	/** Slot 1 — arc length of this segment (cm). */
+	/** Slot 1 - arc length of this segment (cm). */
 	static constexpr int32 SegmentLength = 1;
 
-	/** Slot 2 — full river cross-section width (cm). */
+	/** Slot 2 - full river cross-section width (cm). */
 	static constexpr int32 Width = 2;
 
-	/** Slot 3 — total spline length (cm), or -1.0 when the spline is a
+	/** Slot 3 - total spline length (cm), or -1.0 when the spline is a
 		closed loop. Negative disables the endpoint fade in the material
 		(a loop has no endpoints to fade at). */
 	static constexpr int32 TotalLength = 3;
@@ -74,7 +76,7 @@ static void ApplyRiverSegmentShaderData(
 		Spline->GetDistanceAlongSplineAtSplinePoint(NextIdx) - StartDist;
 
 	// Closed-loop wrap: the final segment's end point is point 0, whose
-	// distance along the spline is 0 — the subtraction goes negative.
+	// distance along the spline is 0 - the subtraction goes negative.
 	// The true length is the remainder of the loop.
 	if (SegLength <= 0.0f)
 	{
@@ -104,7 +106,7 @@ ARiverWaterBodyActor::ARiverWaterBodyActor()
 	UnderwaterPP = CreateDefaultSubobject<UUnderwaterPostProcessComponent>(TEXT("UnderwaterPP"));
 	UnderwaterPP->SetupAttachment(RootComponent);
 
-	// Give the default spline a reasonable starting shape — a gentle curve
+	// Give the default spline a reasonable starting shape - a gentle curve
 	// rather than a straight line, so the river looks natural on placement.
 	RiverSpline->SetSplinePoints(
 		{
@@ -120,10 +122,20 @@ ARiverWaterBodyActor::ARiverWaterBodyActor()
 	OceanBody->BodyType = EOceanBodyType::River;
 	OceanBody->Priority = 20;
 
+	StartJunction = CreateDefaultSubobject<UWaterBodyJunctionComponent>(TEXT("StartJunction"));
+	StartJunction->SetupAttachment(RiverSpline);
+	StartJunction->SetVisibility(false);
+	EndJunction = CreateDefaultSubobject<UWaterBodyJunctionComponent>(TEXT("EndJunction"));
+	EndJunction->SetupAttachment(RiverSpline);
+	EndJunction->SetVisibility(false);
+
+	StartConnection.Endpoint = EWaterConnectionEndpoint::Start;
+	EndConnection.Endpoint = EWaterConnectionEndpoint::End;
+
 	// Rivers don't use tiled mesh, so disable auto-sizing
 	OceanBody->bAutoSizeExtentFromMesh = false;
 
-	// Visual shaping — rivers use subtler values than open ocean
+	// Visual shaping - rivers use subtler values than open ocean
 	OceanBody->DomainWarpFrequency = 0.0005f;
 	OceanBody->DomainWarpAmount = 150.0f;
 	OceanBody->CrestSharpness = 1.2f;
@@ -135,17 +147,17 @@ ARiverWaterBodyActor::ARiverWaterBodyActor()
 	Gen.NumWaves = 4;
 	Gen.Seed = 200;
 	Gen.Randomness = 0.2f;
-	Gen.MinWavelength = 30.0f;      // 30cm — fine surface ripples
-	Gen.MaxWavelength = 300.0f;     // 3m — gentle surface undulation
+	Gen.MinWavelength = 30.0f;      // 30cm - fine surface ripples
+	Gen.MaxWavelength = 300.0f;     // 3m - gentle surface undulation
 	Gen.WavelengthFalloff = 1.5f;
 	Gen.MinAmplitude = 1.0f;        // 1cm
-	Gen.MaxAmplitude = 5.0f;        // 5cm — subtle, not ocean-scale
+	Gen.MaxAmplitude = 5.0f;        // 5cm - subtle, not ocean-scale
 	Gen.AmplitudeFalloff = 1.5f;
 	Gen.LargeWaveSteepness = 0.15f;
 	Gen.SmallWaveSteepness = 0.4f;
 	Gen.SteepnessFalloff = 1.0f;
 	Gen.DominantWindAngle = 0.0f;   // 0 degrees = +X, aligned to default spline tangent
-	Gen.DirectionAngularSpread = 40.0f;  // Narrow spread — waves follow the river
+	Gen.DirectionAngularSpread = 40.0f;  // Narrow spread - waves follow the river
 	Gen.GlobalSpeedMultiplier = 1.5f;    // Faster-moving water feel
 	Gen.NoiseStrength = 0.15f;
 	Gen.NoiseOctaves = 2;
@@ -162,7 +174,7 @@ ARiverWaterBodyActor::ARiverWaterBodyActor()
 	Detail.NumWaves = 4;
 	Detail.Seed = 300;
 	Detail.Randomness = 0.2f;
-	Detail.MinWavelength = 10.0f;    // 10cm — very fine capillary ripples
+	Detail.MinWavelength = 10.0f;    // 10cm - very fine capillary ripples
 	Detail.MaxWavelength = 100.0f;   // 1m
 	Detail.WavelengthFalloff = 1.2f;
 	Detail.MinAmplitude = 0.3f;
@@ -194,6 +206,7 @@ void ARiverWaterBodyActor::BeginPlay()
 	Super::BeginPlay();
 	RebuildRiverMesh();
 	RefreshMeshMaterial();
+	RefreshJunctions();
 }
 
 #if WITH_EDITOR
@@ -216,7 +229,7 @@ void ARiverWaterBodyActor::OnConstruction(const FTransform& Transform)
 
 	if (SegmentMeshes.Num() == ExpectedSegments && ExpectedSegments > 0)
 	{
-		// Same segment count — update transforms in place.
+		// Same segment count - update transforms in place.
 		// This is the hot path during spline point drags: no component
 		// creation/destruction, just SetStartAndEnd on existing meshes.
 		UpdateSegmentTransforms();
@@ -228,6 +241,7 @@ void ARiverWaterBodyActor::OnConstruction(const FTransform& Transform)
 	}
 
 	RefreshMeshMaterial();
+	RefreshJunctions();
 }
 
 void ARiverWaterBodyActor::PostEditChangeProperty(
@@ -237,14 +251,14 @@ void ARiverWaterBodyActor::PostEditChangeProperty(
 
 	const FName MemberName = PropertyChangedEvent.GetMemberPropertyName();
 
-	// Source mesh changed — full rebuild to pick up the new asset
+	// Source mesh changed - full rebuild to pick up the new asset
 	if (MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, RiverSegmentMesh))
 	{
 		RebuildRiverMesh();
 		RefreshMeshMaterial();
 	}
 
-	// Width changed — update scale on existing segments (no rebuild).
+	// Width changed - update scale on existing segments (no rebuild).
 	// UpdateSegmentTransforms also refreshes the custom primitive data
 	// so the material's cross-width coordinate tracks the new width.
 	if (MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, RiverWidth))
@@ -257,13 +271,19 @@ void ARiverWaterBodyActor::PostEditChangeProperty(
 		}
 	}
 
-	// FlowSpeed change — re-register to push new value to subsystem/MID
+	// FlowSpeed change - re-register to push new value to subsystem/MID
 	if (MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, FlowSpeed))
 	{
 		if (OceanBody)
 		{
 			OceanBody->InitializeWaterBody();
 		}
+	}
+
+	if (MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, StartConnection)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(ARiverWaterBodyActor, EndConnection))
+	{
+		RefreshJunctions();
 	}
 }
 #endif
@@ -282,14 +302,14 @@ UStaticMesh* ARiverWaterBodyActor::GetSegmentMesh() const
 	}
 
 	// Fallback: engine's basic plane (2 tris, no LODs).
-	// Usable for testing but not production — log a reminder.
+	// Usable for testing but not production - log a reminder.
 	UStaticMesh* FallbackMesh = LoadObject<UStaticMesh>(
 		nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
 
 	if (FallbackMesh)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("RiverWaterBodyActor '%s': No RiverSegmentMesh assigned — "
+			TEXT("RiverWaterBodyActor '%s': No RiverSegmentMesh assigned - "
 				"using engine Plane fallback (2 tris, no LODs). Assign a "
 				"subdivided plane mesh for proper WPO and LOD support."),
 			*GetName());
@@ -375,18 +395,18 @@ USplineMeshComponent* ARiverWaterBodyActor::CreateSegmentMesh(
 	// is created with the right flags.
 	Mesh->SetMobility(EComponentMobility::Movable);
 
-	// Disable collision — water surfaces don't block movement,
+	// Disable collision - water surfaces don't block movement,
 	// buoyancy is handled by the CPU evaluator.
 	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
-	// Assign the source mesh — user asset with LODs, or engine fallback.
+	// Assign the source mesh - user asset with LODs, or engine fallback.
 	UStaticMesh* SourceMesh = GetSegmentMesh();
 	if (SourceMesh)
 	{
 		Mesh->SetStaticMesh(SourceMesh);
 	}
 
-	// Forward axis MUST be set before SetStartAndEnd — it controls
+	// Forward axis MUST be set before SetStartAndEnd - it controls
 	// which axis of the source mesh is remapped along the spline.
 	// X = the plane's length axis follows the river path.
 	Mesh->SetForwardAxis(ESplineMeshAxis::X);
@@ -399,14 +419,14 @@ USplineMeshComponent* ARiverWaterBodyActor::CreateSegmentMesh(
 	Mesh->SetStartScale(FVector2D(WidthScale, 1.0f));
 	Mesh->SetEndScale(FVector2D(WidthScale, 1.0f));
 
-	// Set spline points for this segment — drives the deformation.
+	// Set spline points for this segment - drives the deformation.
 	Mesh->SetStartAndEnd(
 		StartPos, StartTangent,
 		EndPos, EndTangent,
 		/*bUpdateMesh=*/true);
 
 	// River-space custom primitive data (flow UVs, edge fades) and
-	// translucency sort priority. Safe pre-registration — the render
+	// translucency sort priority. Safe pre-registration - the render
 	// proxy picks the values up when it is created.
 	ApplyRiverSegmentShaderData(
 		Mesh, RiverSpline, SegmentIndex, RiverWidth,
@@ -455,7 +475,7 @@ void ARiverWaterBodyActor::UpdateSegmentTransforms()
 		Mesh->SetStartScale(FVector2D(WidthScale, 1.0f));
 		Mesh->SetEndScale(FVector2D(WidthScale, 1.0f));
 
-		// Keep river-space data current — spline drags change segment
+		// Keep river-space data current - spline drags change segment
 		// lengths and start distances, width edits change slot 2.
 		ApplyRiverSegmentShaderData(
 			Mesh, RiverSpline, i, RiverWidth,
@@ -496,18 +516,18 @@ void ARiverWaterBodyActor::RefreshMeshMaterial()
 	if (!MatToApply)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("RiverWaterBodyActor '%s': No material — set BaseMaterial on OceanBody."),
+			TEXT("RiverWaterBodyActor '%s': No material - set BaseMaterial on OceanBody."),
 			*GetName());
 		return;
 	}
 
 	// Falling back to the base material means WaveCount stays at its
-	// default of 0 — the surface will render but never displace. Shout
+	// default of 0 - the surface will render but never displace. Shout
 	// so this can't fail silently again.
 	if (!MID)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("RiverWaterBodyActor '%s': Applying BASE material — no MID yet, "
+			TEXT("RiverWaterBodyActor '%s': Applying BASE material - no MID yet, "
 				"so wave parameters will not be synced and WPO will be flat. "
 				"InitializeWaterBody() should have created the MID; check that "
 				"BaseMaterial is set on the OceanBody component."),
@@ -521,4 +541,126 @@ void ARiverWaterBodyActor::RefreshMeshMaterial()
 			Mesh->SetMaterial(0, MatToApply);
 		}
 	}
+}
+
+void ARiverWaterBodyActor::RefreshJunctions()
+{
+	if (!RiverSpline || !OceanBody || RiverSpline->IsClosedLoop())
+	{
+		if (StartJunction) StartJunction->ClearJunction();
+		if (EndJunction) EndJunction->ClearJunction();
+		return;
+	}
+
+	StartConnection.Endpoint = EWaterConnectionEndpoint::Start;
+	EndConnection.Endpoint = EWaterConnectionEndpoint::End;
+	if (!StartConnection.ConnectionId.IsValid())
+	{
+		StartConnection.ConnectionId = FGuid::NewGuid();
+	}
+	if (!EndConnection.ConnectionId.IsValid())
+	{
+		EndConnection.ConnectionId = FGuid::NewGuid();
+	}
+	auto ResolveNetworkId = [](FWaterBodyConnectionConfig& Connection)
+	{
+		if (Connection.TargetBody)
+		{
+			if (!Connection.TargetBody->SurfaceNetworkId.IsValid())
+			{
+				Connection.TargetBody->SurfaceNetworkId = FGuid::NewGuid();
+			}
+			// Connections sharing a target must share its rolling ship field.
+			Connection.NetworkId = Connection.TargetBody->SurfaceNetworkId;
+		}
+		else if (!Connection.NetworkId.IsValid())
+		{
+			Connection.NetworkId = Connection.ConnectionId;
+		}
+	};
+	ResolveNetworkId(StartConnection);
+	ResolveNetworkId(EndConnection);
+
+	if (StartJunction)
+	{
+		if (StartConnection.IsUsable())
+		{
+			StartJunction->ConfigureJunction(
+				OceanBody, RiverSpline, RiverWidth, StartConnection);
+		}
+		else
+		{
+			StartJunction->ClearJunction();
+		}
+	}
+	if (EndJunction)
+	{
+		if (EndConnection.IsUsable())
+		{
+			EndJunction->ConfigureJunction(
+				OceanBody, RiverSpline, RiverWidth, EndConnection);
+		}
+		else
+		{
+			EndJunction->ClearJunction();
+		}
+	}
+}
+
+void ARiverWaterBodyActor::DetectWaterConnections()
+{
+	UWorld* World = GetWorld();
+	UWaveParameterSubsystem* Waves = World
+		? World->GetSubsystem<UWaveParameterSubsystem>()
+		: nullptr;
+	if (!Waves || !RiverSpline || RiverSpline->IsClosedLoop())
+	{
+		return;
+	}
+
+	auto DetectAt = [this, Waves](
+		EWaterConnectionEndpoint Endpoint,
+		FWaterBodyConnectionConfig& OutConfig)
+	{
+		const float Distance = Endpoint == EWaterConnectionEndpoint::Start
+			? 0.0f
+			: RiverSpline->GetSplineLength();
+		const FVector Position = RiverSpline->GetLocationAtDistanceAlongSpline(
+			Distance, ESplineCoordinateSpace::World);
+		const FVector2D XY(Position.X, Position.Y);
+
+		UOceanBodyComponent* Best = nullptr;
+		float BestVerticalDistance = TNumericLimits<float>::Max();
+		int32 BestPriority = TNumericLimits<int32>::Lowest();
+		for (const FWaterBodyEntry& Entry : Waves->GetWaterBodies())
+		{
+			if (!Entry.Owner.IsValid() || Entry.Owner.Get() == OceanBody
+				|| Entry.BodyType == EOceanBodyType::River
+				|| !Entry.Bounds.bIsValid || !Entry.Bounds.IsInside(XY))
+			{
+				continue;
+			}
+
+			const float VerticalDistance = FMath::Abs(Position.Z - Entry.BaseZ);
+			if (VerticalDistance < BestVerticalDistance - 1.0f
+				|| (FMath::IsNearlyEqual(VerticalDistance, BestVerticalDistance, 1.0f)
+					&& Entry.Priority > BestPriority))
+			{
+				Best = Entry.Owner.Get();
+				BestVerticalDistance = VerticalDistance;
+				BestPriority = Entry.Priority;
+			}
+		}
+
+		if (Best)
+		{
+			OutConfig.Endpoint = Endpoint;
+			OutConfig.TargetBody = Best;
+			OutConfig.bEnabled = true;
+		}
+	};
+
+	DetectAt(EWaterConnectionEndpoint::Start, StartConnection);
+	DetectAt(EWaterConnectionEndpoint::End, EndConnection);
+	RefreshJunctions();
 }
