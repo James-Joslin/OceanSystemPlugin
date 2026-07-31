@@ -46,21 +46,26 @@ void UOceanBodyComponent::OnUpdateTransform(
 		return;
 	}
 
-	const float NewZ = GetComponentLocation().Z;
-	if (!FMath::IsNearlyEqual(NewZ, LastRegisteredZ, 0.5f))
+	const FTransform NewTransform = GetComponentTransform();
+	if (!bHasRegisteredTransform
+		|| !NewTransform.Equals(LastRegisteredTransform, 0.5f))
 	{
 		InitializeWaterBody();
 	}
 }
 
 // ===================================================================
-// InitializeWaterBody � shared editor/runtime init
+// InitializeWaterBody - shared editor/runtime init
 // ===================================================================
 
 void UOceanBodyComponent::InitializeWaterBody()
 {
 	AActor* Owner = GetOwner();
 	const FString OwnerName = Owner ? Owner->GetName() : TEXT("null");
+	if (!SurfaceNetworkId.IsValid())
+	{
+		SurfaceNetworkId = FGuid::NewGuid();
+	}
 
 	// --- Auto-size Extent from a sibling tiled mesh ---
 	// Guarantees the subsystem's query bounds match the rendered water
@@ -99,7 +104,7 @@ void UOceanBodyComponent::InitializeWaterBody()
 	else
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("OceanBodyComponent on '%s': BaseMaterial not set � no MID created."),
+			TEXT("OceanBodyComponent on '%s': BaseMaterial not set - no MID created."),
 			*OwnerName);
 	}
 
@@ -122,6 +127,7 @@ void UOceanBodyComponent::InitializeWaterBody()
 
 	FWaterBodyEntry Entry = BuildRegistryEntry();
 	Subsystem->RegisterWaterBody(Entry);
+	Subsystem->RefreshConnectionsFor(this);
 
 	// Register this body's unique MID and XY coverage with the visual
 	// ship-wave mask system. Rivers are ignored by that subsystem.
@@ -163,9 +169,8 @@ void UOceanBodyComponent::InitializeWaterBody()
 		);
 	}
 
-	// Remember where we registered so OnUpdateTransform can detect
-	// genuine Z changes and re-register.
-	LastRegisteredZ = GetComponentLocation().Z;
+	LastRegisteredTransform = GetComponentTransform();
+	bHasRegisteredTransform = true;
 }
 
 // ===================================================================
@@ -190,6 +195,7 @@ void UOceanBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		if (UWaveParameterSubsystem* Subsystem =
 			World->GetSubsystem<UWaveParameterSubsystem>())
 		{
+			Subsystem->UnregisterConnectionsFor(this);
 			Subsystem->UnregisterWaterBody(this);
 		}
 
@@ -205,16 +211,16 @@ void UOceanBodyComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 }
 
 // ===================================================================
-// Editor � Property Change Handling
+// Editor - Property Change Handling
 // ===================================================================
 //
 // Without this, editing WaveConfig.Layers directly in the Details panel
-// has no effect � the subsystem's copy of the config never updates and
+// has no effect - the subsystem's copy of the config never updates and
 // the MID never resyncs. This catches property changes and pushes the
 // new values to the subsystem immediately.
 //
 // Note: OnConstruction also fires on every property change, but it
-// only ensures MID/registration exist � it doesn't rebuild tiles.
+// only ensures MID/registration exist - it doesn't rebuild tiles.
 // This handler is responsible for the lightweight "mark dirty" path.
 // ===================================================================
 

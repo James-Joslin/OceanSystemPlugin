@@ -46,6 +46,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body")
 	int32 Priority = 0;
 
+	/** Stable identity used to merge every connection touching this surface. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Body|Connections")
+	FGuid SurfaceNetworkId;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Body|Material")
 	TSoftObjectPtr<UMaterialInterface> BaseMaterial;
 
@@ -117,7 +121,7 @@ public:
 	/**
 	 * Create MID (if needed) and register with the wave subsystem.
 	 * Called from the owning actor's OnConstruction (editor preview)
-	 * and from BeginPlay (runtime). Safe to call multiple times �
+	 * and from BeginPlay (runtime). Safe to call multiple times -
 	 * skips MID recreation if the parent material hasn't changed.
 	 */
 	void InitializeWaterBody();
@@ -154,8 +158,9 @@ protected:
 private:
 	FWaterBodyEntry BuildRegistryEntry() const;
 
-	/** World Z at last registration. Sentinel forces first registration. */
-	float LastRegisteredZ = TNumericLimits<float>::Lowest();
+	/** Full transform at last registration; flat body XY bounds must move too. */
+	FTransform LastRegisteredTransform = FTransform::Identity;
+	bool bHasRegisteredTransform = false;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> MaterialInstance = nullptr;

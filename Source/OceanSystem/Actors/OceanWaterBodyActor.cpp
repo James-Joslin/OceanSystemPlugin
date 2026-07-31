@@ -177,6 +177,7 @@ void AOceanWaterBodyActor::OnConstruction(const FTransform& Transform)
 			TiledMesh->SetMaterialOnAllTiles(BaseMat);
 		}
 	}
+	UpdateBoundsFromWaveConfig();
 }
 #endif
 
@@ -213,6 +214,7 @@ void AOceanWaterBodyActor::UpdateBoundsFromWaveConfig()
 	}
 
 	TiledMesh->VerticalBoundsExtension = MaxDisplacement * 1.5f;
+	TiledMesh->RefreshBoundsScale();
 }
 
 void AOceanWaterBodyActor::SyncExtentFromMesh()

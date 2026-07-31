@@ -148,6 +148,7 @@ void ALakeWaterBodyActor::OnConstruction(const FTransform& Transform)
 			TiledMesh->SetMaterialOnAllTiles(BaseMat);
 		}
 	}
+	UpdateBoundsFromWaveConfig();
 }
 #endif
 
@@ -178,6 +179,7 @@ void ALakeWaterBodyActor::UpdateBoundsFromWaveConfig()
 	}
 
 	TiledMesh->VerticalBoundsExtension = MaxDisp * 1.5f;
+	TiledMesh->RefreshBoundsScale();
 }
 
 void ALakeWaterBodyActor::SyncExtentFromMesh()

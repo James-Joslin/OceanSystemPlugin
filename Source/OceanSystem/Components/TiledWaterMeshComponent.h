@@ -14,7 +14,7 @@ class UMaterialInterface;
  * Fixed-placement grid of flat tile meshes with camera-distance LOD.
  *
  * Used for lakes and wide river mouths. The component manages a grid of
- * TilesX � TilesY child UProceduralMeshComponents, each pre-generated
+ * TilesX x TilesY child UProceduralMeshComponents, each pre-generated
  * with mesh sections at every LOD level. Per-frame, each tile's distance
  * to the camera determines the active LOD section (all others are hidden).
  *
@@ -36,7 +36,7 @@ public:
 	UTiledWaterMeshComponent();
 
 	// -------------------------------------------------------------------
-	// Properties � Grid Layout
+	// Properties - Grid Layout
 	// -------------------------------------------------------------------
 
 	/** Number of tile columns (X axis). */
@@ -55,7 +55,7 @@ public:
 	float TileSize = 500.0f;
 
 	// -------------------------------------------------------------------
-	// Properties � LOD
+	// Properties - LOD
 	// -------------------------------------------------------------------
 
 	/** Subdivisions per tile edge at highest LOD (nearest to camera). */
@@ -111,6 +111,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TiledMesh")
 	void SetMaterialOnAllTiles(UMaterialInterface* Material);
 
+	/** Register/replace a convex world-XY opening and rebuild affected mesh data. */
+	bool RegisterCutout(const FGuid& CutoutId, const TArray<FVector>& WorldBoundary);
+
+	/** Remove a previously registered opening. */
+	void UnregisterCutout(const FGuid& CutoutId);
+
+	/** Reapply VerticalBoundsExtension to already-created tile components. */
+	void RefreshBoundsScale();
+
 	/** Number of tile components currently created. */
 	UFUNCTION(BlueprintCallable, Category = "TiledMesh")
 	int32 GetTileCount() const { return TileMeshes.Num(); }
@@ -137,6 +146,7 @@ private:
 	 */
 	void GenerateGridMesh(
 		float GridSize, int32 Subdivisions,
+		const FVector& TileRelativeCenter,
 		TArray<FVector>& OutVertices,
 		TArray<int32>& OutTriangles,
 		TArray<FVector>& OutNormals,
@@ -154,6 +164,9 @@ private:
 
 	/** Destroy all tile mesh components and clear tracking arrays. */
 	void DestroyTileMeshes();
+
+	/** World-space convex cutouts keyed by stable junction ID. */
+	TMap<FGuid, TArray<FVector2D>> RegisteredCutouts;
 
 	// -------------------------------------------------------------------
 	// Tile Data
